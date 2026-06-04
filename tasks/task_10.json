@@ -1,0 +1,13 @@
+{
+  "id": 10,
+  "uuid": "c090b4c0-6650-47c6-b2f5-67eff2be9aed",
+  "description": "Implement Knowledge Tool (RAG)",
+  "agent": "seed_agent",
+  "status": "done",
+  "dependencies": [],
+  "story_id": null,
+  "created_at": "2026-06-03T15:33:17.197423+00:00",
+  "updated_at": "2026-06-03T15:33:17.198225+00:00",
+  "verification_artifacts": [],
+  "completion_notes": "Implemented tools/knowledge_tool.py with hybrid keyword/semantic search and Markdown storage. 113 tests passed."
+}

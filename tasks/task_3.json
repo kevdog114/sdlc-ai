@@ -1,0 +1,13 @@
+{
+  "id": 3,
+  "uuid": "4c949fb0-4e9b-41e4-9c12-f1d3736593d7",
+  "description": "Tool Created: file_manager",
+  "agent": "unassigned",
+  "status": "done",
+  "dependencies": [],
+  "story_id": null,
+  "created_at": "2026-06-03T13:19:06.045241+00:00",
+  "updated_at": "2026-06-03T13:19:06.045429+00:00",
+  "verification_artifacts": [],
+  "completion_notes": null
+}

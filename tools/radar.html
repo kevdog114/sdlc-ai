@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Command Center — Radar</title>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            radar: {
+              bg: '#0a0e17',
+              panel: '#111827',
+              border: '#1e293b',
+              accent: '#06b6d4',
+              success: '#10b981',
+              warning: '#f59e0b',
+              danger: '#ef4444',
+              dim: '#475569',
+              text: '#e2e8f0',
+              muted: '#94a3b8',
+            }
+          },
+          animation: {
+            'pulse-slow': 'pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+            'glow': 'glow 2s ease-in-out infinite alternate',
+          },
+          keyframes: {
+            glow: {
+              '0%': { boxShadow: '0 0 5px #06b6d4, 0 0 10px #06b6d4' },
+              '100%': { boxShadow: '0 0 20px #06b6d4, 0 0 30px #06b6d4' },
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    * { scrollbar-width: thin; scrollbar-color: #1e293b #0a0e17; }
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: #0a0e17; }
+    ::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 3px; }
+    .terminal-text { font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+    .fade-in { animation: fadeIn 0.3s ease-out; }
+  </style>
+</head>
+<body class="bg-radar-bg text-radar-text min-h-screen">
+  <div id="app">
+    <!-- Header -->
+    <header class="border-b border-radar-border bg-radar-panel px-6 py-3 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="w-3 h-3 rounded-full bg-radar-accent animate-pulse-slow"></div>
+        <h1 class="text-lg font-bold tracking-wider text-radar-accent">COMMAND CENTER</h1>
+        <span class="text-xs text-radar-dim uppercase tracking-widest">Live Radar</span>
+      </div>
+      <div class="flex items-center gap-4 text-xs text-radar-muted">
+        <span class="flex items-center gap-1.5">
+          <span :class="connectionDot"></span>
+          {{ connectionLabel }}
+        </span>
+        <span>Agents: {{ activeAgentCount }}</span>
+        <span>Tasks: {{ taskStats.done }}/{{ totalTasks }}</span>
+        <span id="clock">{{ clock }}</span>
+      </div>
+    </header>
+
+    <!-- Main Grid -->
+    <main class="grid grid-cols-12 gap-4 p-4 h-[calc(100vh-57px)]">
+      <!-- Agent Fleet (left column) -->
+      <section class="col-span-3 flex flex-col bg-radar-panel rounded-lg border border-radar-border overflow-hidden">
+        <div class="px-4 py-2.5 border-b border-radar-border bg-radar-panel">
+          <h2 class="text-xs font-semibold uppercase tracking-widest text-radar-muted">Agent Fleet</h2>
+        </div >
+        <div class="flex-1 overflow-y-auto p-3 space-y-2">
+          <div v-if="agents.length === 0" class="text-center py-8 text-radar-dim text-xs">
+            No active agents
+          </div >
+          <div
+            v-for="agent in agents"
+            :key="agent.agent_id"
+            class="fade-in bg-radar-bg rounded-lg border border-radar-border p-3"
+          >
+            <div class="flex items-center justify-between mb-2">
+              <span class="text-sm font-semibold text-radar-text">{{ agent.agent_id }}</span>
+              <span
+                class="flex items-center gap-1.5 text-xs px-2 py-0.5 rounded-full"
+                :class="agentStatusClass(agent.state)"
+              >
+                <span :class="agentPulseClass(agent.state)"></span>
+                {{ agentStatusLabel(agent.state) }}
+              </span >
+            </div >
+            <div class="text-xs text-radar-muted space-y-1">
+              <div v-if="agent.persona">Persona: <span class="text-radar-accent">{{ agent.persona }}</span></div >
+              <div v-if="agent.goal">Goal: <span class="text-radar-text truncate block">{{ agent.goal }}</span></div >
+            </div >
+          </div >
+        </div >
+      </section>
+
+      <!-- Mission Map (center) -->
+      <section class="col-span-5 flex flex-col bg-radar-panel rounded-lg border border-radar-border overflow-hidden">
+        <div class="px-4 py-2.5 border-b border-radar-border bg-radar-panel">
+          <h2 class="text-xs font-semibold uppercase tracking-widest text-radar-muted">Mission Map</h2>
+        </div >
+
+        <!-- Progress Summary -->
+        <div class="px-4 py-3 border-b border-radar-border grid grid-cols-4 gap-2">
+          <div class="text-center">
+            <div class="text-2xl font-bold text-radar-warning">{{ taskStats.pending }}</div>
+            <div class="text-[10px] uppercase tracking-wider text-radar-dim">Pending</div>
+          </div >
+          <div class="text-center">
+            <div class="text-2xl font-bold text-radar-accent">{{ taskStats.in_progress }}</div>
+            <div class="text-[10px] uppercase tracking-wider text-radar-dim">In Progress</div>
+          </div >
+          <div class="text-center">
+            <div class="text-2xl font-bold text-radar-success">{{ taskStats.done }}</div>
+            <div class="text-[10px] uppercase tracking-wider text-radar-dim">Done</div>
+          </div >
+          <div class="text-center">
+            <div class="text-2xl font-bold text-radar-text">{{ totalTasks }}</div>
+            <div class="text-[10px] uppercase tracking-wider text-radar-dim">Total</div>
+          </div >
+        </div >
+
+        <!-- Progress Bar -->
+        <div class="px-4 py-2">
+          <div class="h-1.5 bg-radar-bg rounded-full overflow-hidden">
+            <div
+              class="h-full bg-gradient-to-r from-radar-accent to-radar-success transition-all duration-500"
+              :style="{ width: progressPercent + '%' }"
+            ></div >
+          </div >
+          <div class="text-right text-[10px] text-radar-dim mt-0.5">{{ progressPercent }}% complete</div>
+        </div >
+
+        <!-- Task List -->
+        <div class="flex-1 overflow-y-auto p-3 space-y-1.5">
+          <div v-if="tasks.length === 0" class="text-center py-8 text-radar-dim text-xs">
+            No tasks in registry
+          </div >
+          <div
+            v-for="task in sortedTasks"
+            :key="task.id"
+            class="fade-in flex items-center gap-3 px-3 py-2 rounded-lg bg-radar-bg border border-radar-border"
+          >
+            <span
+              class="w-2 h-2 rounded-full flex-shrink-0"
+              :class="taskStatusDot(task.status)"
+            ></span >
+            <div class="flex-1 min-w-0">
+              <div class="text-xs text-radar-text truncate">{{ task.description }}</div >
+              <div class="text-[10px] text-radar-dim">
+                #{{ task.id }} &middot; {{ task.agent || 'unassigned' }}
+              </div >
+            </div >
+            <span
+              class="text-[10px] px-2 py-0.5 rounded-full font-medium flex-shrink-0"
+              :class="taskStatusBadge(task.status)"
+            >
+              {{ task.status }}
+            </span >
+          </div >
+        </div >
+      </section>
+
+      <!-- Thought Stream (right column) -->
+      <section class="col-span-4 flex flex-col bg-radar-panel rounded-lg border border-radar-border overflow-hidden">
+        <div class="px-4 py-2.5 border-b border-radar-border bg-radar-panel flex items-center justify-between">
+          <h2 class="text-xs font-semibold uppercase tracking-widest text-radar-muted">Thought Stream</h2>
+          <span class="text-[10px] text-radar-dim">{{ events.length }} events</span>
+        </div >
+        <div
+          ref="streamContainer"
+          class="flex-1 overflow-y-auto p-3 terminal-text text-xs space-y-0.5"
+        >
+          <div v-if="events.length === 0" class="text-center py-8 text-radar-dim text-xs">
+            Waiting for events...
+          </div >
+          <div
+            v-for="(event, idx) in displayedEvents"
+            :key="idx"
+            class="fade-in py-1 border-b border-radar-border/30 last:border-0"
+          >
+            <span class="text-radar-dim">[{{ eventTime(event.timestamp) }}]</span >
+            <span class="mx-1.5" :class="eventTypeColor(event.type)">{{ event.type }}</span >
+            <span class="text-radar-muted">{{ eventSummary(event) }}</span >
+          </div >
+        </div >
+      </section>
+    </main>
+  </div >
+
+  <script>
+    const { createApp, ref, computed, onMounted, onUnmounted, nextTick } = Vue;
+
+    createApp({
+      setup() {
+        const ws = ref(null);
+        const isConnected = ref(false);
+        const tasks = ref([]);
+        const agents = ref([]);
+        const events = ref([]);
+        const clock = ref('');
+        const streamContainer = ref(null);
+
+        let clockInterval = null;
+        let reconnectTimer = null;
+
+        // Clock
+        const updateClock = () => {
+          const now = new Date();
+          clock.value = now.toLocaleTimeString('en-US', { hour12: false });
+        };
+        updateClock();
+
+        // Connection status
+        const connectionDot = computed(() =>
+          isConnected.value
+            ? 'w-2 h-2 rounded-full bg-radar-success'
+            : 'w-2 h-2 rounded-full bg-radar-danger animate-pulse'
+        );
+        const connectionLabel = computed(() =>
+          isConnected.value ? 'LIVE' : 'CONNECTING...'
+        );
+
+        // Task stats (Derived from Registry)
+        const taskStats = computed(() => {
+          const stats = { pending: 0, in_progress: 0, done: 0, failed: 0 };
+          for (const t of tasks.value) {
+            const s = t.status || 'pending';
+            if (s in stats) stats[s]++;
+          }
+          return stats;
+        });
+        const totalTasks = computed(() => tasks.value.length);
+        const progressPercent = computed(() =>
+          totalTasks.value === 0 ? 0 : Math.round((taskStats.value.done / totalTasks.value) * 100)
+        );
+
+        // Sorted tasks: in_progress first, then pending, then done/failed
+        const sortedTasks = computed(() => {
+          const order = { in_progress: 0, pending: 1, failed: 2, escalated: 3, done: 4 };
+          return [...tasks.value].sort((a, b) => {
+            const oa = order[a.status] ?? 5;
+            const ob = order[b.status] ?? 5;
+            if (oa !== ob) return oa - ob;
+            return b.id - a.id;
+          });
+        });
+
+        // Agent Status Helpers
+        const agentStatusClass = (state) => {
+          if (!state) return 'bg-radar-dim/10 text-radar-dim';
+          switch(state) {
+            case 'thinking': 
+            case 'working':
+              return 'bg-radar-accent/10 text-radar-accent';
+            case 'error':
+              return 'bg-radar-danger/10 text-radar-danger';
+            default:
+              return 'bg-radar-dim/10 text-radar-dim';
+          }
+        };
+
+        const agentPulseClass = (state) => {
+          if (!state) return 'w-1.5 h-1.5 rounded-full bg-radar-dim';
+          if (['thinking', 'working'].includes(state)) return 'w-1.5 h-1.5 rounded-full bg-radar-accent animate-pulse';
+          if (state === 'error') return 'w-1.5 h-1.5 rounded-full bg-radar-danger';
+          return 'w-1.5 h-1.5 rounded-full bg-radar-dim';
+        };
+
+        const agentStatusLabel = (state) => {
+          if (!state) return 'IDLE';
+          switch(state) {
+            case 'thinking': 
+            case 'working': return 'EXECUTING';
+            case 'error': return 'ERROR';
+            default: return state.toUpperCase();
+          }
+        };
+
+        const activeAgentCount = computed(() => agents.value.length);
+
+        // Displayed events (last 200)
+        const displayedEvents = computed(() => events.value.slice(-200));
+
+        // Helpers
+        const taskStatusDot = (status) => {
+          const map = {
+            in_progress: 'bg-radar-accent animate-pulse',
+            pending: 'bg-radar-warning',
+            done: 'bg-radar-success',
+            failed: 'bg-radar-danger',
+            escalated: 'bg-radar-danger',
+          };
+          return map[status] || 'bg-radar-dim';
+        };
+
+        const taskStatusBadge = (status) => {
+          const map = {
+            in_progress: 'bg-radar-accent/10 text-radar-accent',
+            pending: 'bg-radar-warning/10 text-radar-warning',
+            done: 'bg-radar-success/10 text-radar-success',
+            failed: 'bg-radar-danger/10 text-radar-danger',
+            escalated: 'bg-radar-danger/10 text-radar-danger',
+          };
+          return map[status] || 'bg-radar-dim/10 text-radar-dim';
+        };
+
+        const eventTime = (ts) => {
+          if (!ts) return '--:--:--';
+          try {
+            return new Date(ts).toLocaleTimeString('en-US', { hour12: false });
+          } catch { return ts.slice(11, 19); }
+        };
+
+        const eventTypeColor = (type) => {
+          if (!type) return 'text-radar-dim';
+          if (type.startsWith('tool:orchestrator')) return 'text-radar-accent';
+          if (type.startsWith('tool:llm')) return 'text-purple-400';
+          if (type.startsWith('tool:registry')) return 'text-radar-success';
+          if (type.startsWith('tool:dashboard')) return 'text-yellow-400';
+          if (type.startsWith('system:')) return 'text-radar-warning';
+          return 'text-radar-muted';
+        };
+
+        const eventSummary = (event) => {
+          const parts = [];
+          if (event.action) parts.push(`action: ${event.action}`);
+          if (event.task_id != null) parts.push(`task: #${event.task_id}`);
+          if (event.role) parts.push(`role: ${event.role}`);
+          if (event.command) parts.push(`cmd: ${event.command}`);
+          if (event.path) parts.push(`path: ${event.path}`);
+          if (event.count != null) parts.push(`count: ${event.count}`);
+          if (event.success !== undefined) parts.push(`status: ${event.success ? 'ok' : 'fail'}`);
+          if (event.error) parts.push(`error: ${event.error}`);
+          if (event.phase) parts.push(`phase: ${event.phase}`);
+          if (event.component) parts.push(`component: ${event.component}`);
+          if (event.new_status) parts.push(`-> ${event.new_status}`);
+          return parts.length > 0 ? parts.join(' | ') : JSON.stringify(event).slice(0, 120);
+        };
+
+        // API & WebSocket logic
+        const fetchAgents = async () => {
+          try {
+            const res = await fetch('/api/agents');
+            if (res.ok) agents.value = await res.json();
+          } catch (e) { console.error('Failed to fetch agents:', e); }
+        };
+
+        const fetchRegistry = async () => {
+          try {
+            const res = await fetch('/api/registry');
+            if (res.ok) tasks.value = (await res.json()).tasks || [];
+          } catch (e) { console.error('Failed to fetch registry:', e); }
+        };
+
+        const connectWS = () => {
+          const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+          const wsUrl = `${protocol}//${window.location.host}/radar-ws`;
+
+          ws.value = new WebSocket(wsUrl);
+
+          ws.value.onopen = async () => {
+            isConnected.value = true;
+            if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+            // Refresh everything on connection
+            await Promise.all([fetchAgents(), fetchRegistry()]);
+          };
+
+          ws.value.onmessage = async (e) => {
+            try {
+              const data = JSON.parse(e.data);
+              if (data.type === 'initial_state') {
+                tasks.value = data.registry?.tasks || [];
+                events.value = data.events || [];
+                await fetchAgents(); // Sync agents on startup
+                nextTick(scrollToBottom);
+              } else if (data.type === 'registry_update') {
+                const existing = new Map(tasks.value.map(t => [t.id, t]));
+                for (const t of data.tasks) {
+                  existing.set(t.id, t);
+                }
+                tasks.value = Array.from(existing.values()).sort((a, b) => a.id - b.id);
+              } else if (data.type === 'event_update') {
+                events.value = [...events.value, ...data.events];
+                nextTick(scrollToBottom);
+              } else if (data.type === 'telemetry_update') {
+                // Live update individual agent entry in the list
+                const telemetry = data.data;
+                const idx = agents.value.findIndex(a => a.agent_id === telemetry.agent_id);
+                if (idx !== -1) {
+                  agents.value[idx] = { ...agents.value[idx], ...telemetry };
+                } else {
+                  agents.value.push(telemetry);
+                }
+              }
+            } catch (err) {
+              console.error('WS parse error:', err);
+            }
+          };
+
+          ws.value.onclose = () => {
+            isConnected.value = false;
+            reconnectTimer = setTimeout(connectWS, 3000);
+          };
+
+          ws.value.onerror = () => {
+            ws.value?.close();
+          };
+        };
+
+        const scrollToBottom = () => {
+          if (streamContainer.value) {
+            streamContainer.value.scrollTop = streamContainer.value.scrollHeight;
+          }
+        };
+
+        onMounted(() => {
+          connectWS();
+          clockInterval = setInterval(updateClock, 1000);
+        });
+
+        onUnmounted(() => {
+          if (ws.value) ws.value.close();
+          if (clockInterval) clearInterval(clockInterval);
+          if (reconnectTimer) clearTimeout(reconnectTimer);
+        });
+
+        return {
+          ws, isConnected, tasks, agents, events, clock,
+          streamContainer,
+          connectionDot, connectionLabel,
+          taskStats, totalTasks, progressPercent,
+          sortedTasks, activeAgentCount,
+          displayedEvents,
+          taskStatusDot, taskStatusBadge,
+          eventTime, eventTypeColor, eventSummary,
+          agentStatusClass, agentPulseClass, agentStatusLabel
+        };
+      }
+    }).mount('#app');
+  </script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+{
+  "id": 16,
+  "uuid": "00833c88-1d08-4507-9d51-b87ea816e1ce",
+  "description": "Conduct deep research into the current state of quantum computing, covering hardware architectures (e.g., superconducting qubits, trapped ions), software frameworks, major industry players, and recent breakthroughs.",
+  "agent": "researcher",
+  "status": "pending",
+  "dependencies": [],
+  "story_id": null,
+  "created_at": "2026-06-04T02:37:47.119027+00:00",
+  "updated_at": "2026-06-04T02:37:47.119034+00:00",
+  "verification_artifacts": [],
+  "completion_notes": null
+}

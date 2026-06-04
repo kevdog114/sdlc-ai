@@ -1,0 +1,13 @@
+{
+  "id": 21,
+  "uuid": "e541ee7b-cbeb-4527-8678-1a4651c135b0",
+  "description": "Synthesize the researched information into a structured outline for a concise research report, ensuring a logical chronological flow from early concepts to current trends.",
+  "agent": "analyst",
+  "status": "pending",
+  "dependencies": [],
+  "story_id": null,
+  "created_at": "2026-06-04T10:16:04.299041+00:00",
+  "updated_at": "2026-06-04T10:16:04.299047+00:00",
+  "verification_artifacts": [],
+  "completion_notes": null
+}

@@ -1,0 +1,13 @@
+{
+  "id": 34,
+  "uuid": "5c68444a-ed4b-42dc-ba9a-3fe74992fb97",
+  "description": "List the contents of the current directory to confirm that the 'research_report' directory was created successfully.",
+  "agent": "executor",
+  "status": "pending",
+  "dependencies": [],
+  "story_id": null,
+  "created_at": "2026-06-04T11:44:39.463189+00:00",
+  "updated_at": "2026-06-04T11:44:39.463195+00:00",
+  "verification_artifacts": [],
+  "completion_notes": null
+}

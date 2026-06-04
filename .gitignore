@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+logs/
+runtime_logs/
+state/
+test_file_exists.txt
+test_manual.txt

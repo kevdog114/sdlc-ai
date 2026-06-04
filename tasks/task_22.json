@@ -1,0 +1,13 @@
+{
+  "id": 22,
+  "uuid": "f2fde33b-b023-4631-b2fe-1572ece6760f",
+  "description": "Draft the research report based on the provided outline and research findings, maintaining an informative and professional tone.",
+  "agent": "writer",
+  "status": "pending",
+  "dependencies": [],
+  "story_id": null,
+  "created_at": "2026-06-04T10:16:04.300763+00:00",
+  "updated_at": "2026-06-04T10:16:04.300768+00:00",
+  "verification_artifacts": [],
+  "completion_notes": null
+}

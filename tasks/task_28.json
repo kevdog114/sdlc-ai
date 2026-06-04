@@ -1,0 +1,13 @@
+{
+  "id": 28,
+  "uuid": "e0d73bb3-8551-4188-ad3e-e8097590b4ed",
+  "description": "Draft a cohesive weekend trip plan, including a day-by-day schedule, descriptions of each location, and practical tips for visiting Tokyo.",
+  "agent": "writer",
+  "status": "pending",
+  "dependencies": [],
+  "story_id": null,
+  "created_at": "2026-06-04T11:17:09.471822+00:00",
+  "updated_at": "2026-06-04T11:17:09.471825+00:00",
+  "verification_artifacts": [],
+  "completion_notes": null
+}
