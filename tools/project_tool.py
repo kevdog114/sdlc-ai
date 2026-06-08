@@ -47,6 +47,19 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _broadcast_pipeline_status(project_id: str, phase: str, message: str) -> None:
+    """Emit a pipeline status event the frontend can pick up."""
+    append_event(
+        "tool:project",
+        {
+            "action": "pipeline_status",
+            "project_id": project_id,
+            "phase": phase,
+            "message": message,
+        },
+    )
+
+
 # --- Storage Helpers ---------------------------------------------
 
 def _ensure_projects_root() -> Path:
@@ -475,6 +488,7 @@ def submit_project(description: str, name: Optional[str] = None, project_id: Opt
         project_id = project["id"]
 
     # ── Phase 1: BA Analysis ──
+    _broadcast_pipeline_status(project_id, "ba_analysis", "Analyzing requirements...")
     ba_result = _ba_analyze(description)
 
     if not ba_result["success"]:
@@ -526,6 +540,7 @@ def submit_project(description: str, name: Optional[str] = None, project_id: Opt
         project["status"] = PROJECT_STATUS_AWAITING_CLARIFICATION
         project["updated_at"] = _now()
         _save_project(project)
+        _broadcast_pipeline_status(project_id, PHASE_BA_ANALYSIS, f"Awaiting {len(ambiguities)} clarification(s) from you.")
 
         return {
             "success": True,
@@ -602,6 +617,7 @@ def _continue_to_architect(project: Dict[str, Any]) -> Dict[str, Any]:
         "tool:project",
         {"action": "phase_transition", "project_id": project_id, "phase": PHASE_ARCHITECT_DESIGN},
     )
+    _broadcast_pipeline_status(project_id, PHASE_ARCHITECT_DESIGN, "Designing system architecture...")
 
     # ── Phase 2: Architect Design ──
     arch_result = _architect_design(project["refined_requirements"])
@@ -610,6 +626,7 @@ def _continue_to_architect(project: Dict[str, Any]) -> Dict[str, Any]:
         project["status"] = PROJECT_STATUS_FAILED
         project["updated_at"] = _now()
         _save_project(project)
+        _broadcast_pipeline_status(project_id, "failed", arch_result.get("error", "Architect design failed"))
         return {
             "success": False,
             "project_id": project_id,
@@ -648,6 +665,7 @@ def _continue_to_execution(project: Dict[str, Any]) -> Dict[str, Any]:
         "tool:project",
         {"action": "phase_transition", "project_id": project_id, "phase": PHASE_EXECUTION},
     )
+    _broadcast_pipeline_status(project_id, PHASE_EXECUTION, "Creating stories and tasks...")
 
     # ── Phase 3: Create Stories & Tasks ──
     stories = _create_stories_and_tasks(
@@ -660,6 +678,7 @@ def _continue_to_execution(project: Dict[str, Any]) -> Dict[str, Any]:
         project["status"] = PROJECT_STATUS_FAILED
         project["updated_at"] = _now()
         _save_project(project)
+        _broadcast_pipeline_status(project_id, "failed", "Failed to create stories from architecture")
         return {
             "success": False,
             "project_id": project_id,
@@ -672,7 +691,8 @@ def _continue_to_execution(project: Dict[str, Any]) -> Dict[str, Any]:
     total_succeeded = 0
     total_failed = 0
 
-    for story in stories:
+    for idx, story in enumerate(stories):
+        _broadcast_pipeline_status(project_id, PHASE_EXECUTION, f"Executing story {idx + 1}/{len(stories)}: {story.get('title', 'Untitled')}...")
         story_result = _execute_story_tasks(
             story=story,
             project_id=project_id,
@@ -689,6 +709,7 @@ def _continue_to_execution(project: Dict[str, Any]) -> Dict[str, Any]:
     project["status"] = PROJECT_STATUS_COMPLETED
     project["updated_at"] = _now()
     _save_project(project)
+    _broadcast_pipeline_status(project_id, PHASE_COMPLETE, f"Pipeline complete. {total_succeeded}/{total_tasks} tasks succeeded.")
 
     append_event(
         "tool:project",

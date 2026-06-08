@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Set, Optional
 import asyncio
 import uuid
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, BackgroundTasks
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -17,6 +17,26 @@ from watchdog.events import FileSystemEventHandler
 
 import bootstrap
 bootstrap.ensure_initialized()
+
+
+def _run_pipeline_in_thread(func, *args, **kwargs):
+    """Run a blocking pipeline function in a daemon thread.
+
+    FastAPI's BackgroundTasks can starve the event loop when the
+    task contains synchronous blocking calls (e.g. LLM requests).
+    This wrapper ensures the pipeline runs in a proper OS thread.
+    """
+    def _wrapper():
+        try:
+            func(*args, **kwargs)
+        except Exception as e:
+            print(f"[Pipeline Thread] Error: {e}")
+            import traceback
+            traceback.print_exc()
+
+    t = threading.Thread(target=_wrapper, daemon=True)
+    t.start()
+    return t
 
 from tools import stage_gate_tool
 from tools import clarification_tool
@@ -461,7 +481,7 @@ async def get_clarifications(project_id: str = None, status: str = None):
 
 
 @app.post("/api/clarifications/answer")
-async def answer_clarification(request: Request, background_tasks: BackgroundTasks):
+async def answer_clarification(request: Request):
     """Submit an answer to a clarification request."""
     try:
         body = await request.json()
@@ -473,7 +493,7 @@ async def answer_clarification(request: Request, background_tasks: BackgroundTas
         result = answer_request(request_id, answer, answered_by="dashboard")
         if result:
             _broadcast({"type": "clarification_answered", "request_id": request_id, "answer": answer[:200]})
-            # Schedule resume in background to avoid blocking the HTTP response
+            # Run resume in a daemon thread to avoid blocking the event loop
             def _try_resume():
                 try:
                     from project_tool import resume_project as rp, _load_project
@@ -484,7 +504,7 @@ async def answer_clarification(request: Request, background_tasks: BackgroundTas
                             _broadcast({"type": "project_update", "data": resume_result})
                 except Exception:
                     pass
-            background_tasks.add_task(_try_resume)
+            _run_pipeline_in_thread(_try_resume)
             return {"success": True, "request": result, "message": "Answer recorded. Processing resumed in background."}
         return {"success": False, "error": "Request not found"}
     except Exception as e:
@@ -498,7 +518,7 @@ async def options_submit():
     return {"status": "ok"}
 
 @app.post("/api/projects/submit")
-async def submit_project(request: Request, background_tasks: BackgroundTasks):
+async def submit_project(request: Request):
     """Submit a high-level project for the full SDLC pipeline."""
     client_ip = request.client.host if request.client else "unknown"
     print(f"\n[DEBUG] /api/projects/submit hit by {client_ip}")
@@ -509,17 +529,17 @@ async def submit_project(request: Request, background_tasks: BackgroundTasks):
         name = body.get("name", "Untitled Project")
         if not description:
             return {"success": False, "error": "Missing project description"}
-        
+
         from project_tool import create_project_record, submit_project as sp
-        
+
         # 1. Create the record immediately so we have an ID to return
         project = create_project_record(description, name)
         project_id = project["id"]
         print(f"[DEBUG] Created project {project_id}")
-        
-        # 2. Schedule the heavy lifting in the background
-        background_tasks.add_task(sp, description, project_id=project_id)
-        
+
+        # 2. Run the heavy pipeline in a daemon thread
+        _run_pipeline_in_thread(sp, description, project_id=project_id)
+
         # 3. Return immediate response
         result = {
             "success": True,
@@ -527,7 +547,7 @@ async def submit_project(request: Request, background_tasks: BackgroundTasks):
             "status": project["status"],
             "message": "Project submitted and analysis started in the background."
         }
-        
+
         # Broadcast that a new project is being tracked
         _broadcast({"type": "project_update", "data": result})
         return result
@@ -538,7 +558,7 @@ async def submit_project(request: Request, background_tasks: BackgroundTasks):
 
 
 @app.post("/api/projects/resume")
-async def resume_project(request: Request, background_tasks: BackgroundTasks):
+async def resume_project(request: Request):
     """Resume a project that was paused for clarifications."""
     try:
         body = await request.json()
@@ -554,7 +574,7 @@ async def resume_project(request: Request, background_tasks: BackgroundTasks):
             except Exception as e:
                 _broadcast({"type": "project_update", "data": {"error": str(e)}})
 
-        background_tasks.add_task(_do_resume)
+        _run_pipeline_in_thread(_do_resume)
         _broadcast({"type": "project_update", "data": {"project_id": project_id, "status": "resuming"}})
         return {"success": True, "project_id": project_id, "message": "Project resume started in background."}
     except Exception as e:
@@ -593,7 +613,7 @@ async def get_project(project_id: str):
 
 
 @app.post("/api/projects/{project_id}/command")
-async def project_command(project_id: str, request: Request, background_tasks: BackgroundTasks):
+async def project_command(project_id: str, request: Request):
     """Send a command/prompt to an existing project for BA analysis."""
     try:
         body = await request.json()
@@ -617,7 +637,7 @@ async def project_command(project_id: str, request: Request, background_tasks: B
             except Exception as e:
                 _broadcast({"type": "project_update", "data": {"project_id": project_id, "error": str(e)}})
 
-        background_tasks.add_task(run_ba)
+        _run_pipeline_in_thread(run_ba)
 
         _broadcast({"type": "project_update", "data": {"project_id": project_id, "status": "ba_analysis_started", "command": command}})
         return {"success": True, "project_id": project_id, "status": "ba_analysis_started", "message": "Command sent for BA analysis."}
@@ -686,15 +706,20 @@ def start_pulse_server(host: str = "0.0.0.0", port: int = 8080) -> str:
         """Callback when a clarification is answered via Telegram."""
         _broadcast({"type": "clarification_answered", "request_id": request_id})
         try:
-            from project_tool import resume_project, _load_project
+            from project_tool import resume_project as rp, _load_project
             from clarification_tool import get_request
             req = get_request(request_id)
             if req and req.get("project_id"):
                 proj = _load_project(req["project_id"])
                 if proj and proj.get("status") == "awaiting_clarification":
-                    resume_result = resume_project(req["project_id"])
-                    if resume_result.get("status") == "completed":
-                        _broadcast({"type": "project_update", "data": resume_result})
+                    def _do_resume():
+                        try:
+                            resume_result = rp(req["project_id"])
+                            if resume_result.get("status") == "completed":
+                                _broadcast({"type": "project_update", "data": resume_result})
+                        except Exception:
+                            pass
+                    _run_pipeline_in_thread(_do_resume)
         except Exception:
             pass
 

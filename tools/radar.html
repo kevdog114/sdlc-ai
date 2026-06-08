@@ -91,9 +91,12 @@
                   {{ project.status }}
                 </span></div><p class="text-sm text-radar-muted line-clamp-3">{{ project.description }}</p>
 </div><div class="flex justify-between items-center mt-4 pt-4 border-t border-radar-border/50">
-              <span class="text-[10px] text-radar-dim uppercase tracking-widest">Phase: {{ project.phase }}</span><span v-if="project.clarifications?.pending > 0" class="text-xs text-radar-warning flex items-center gap-1">
+              <span class="text-[10px] text-radar-dim uppercase tracking-widest">Phase: {{ project.phase }}</span>              <span v-if="project.clarifications?.pending > 0" class="text-xs text-radar-warning flex items-center gap-1">
                 <span class="w-1.5 h-1.5 rounded-full bg-radar-warning animate-pulse"></span>{{ project.clarifications.pending }} Clarifications
-              </span></div></div><!-- Empty State -->
+              </span><!-- Pipeline Status Indicator -->
+              <div v-if="pipelineStatuses[project.id]" class="text-[10px] text-radar-accent flex items-center gap-1 truncate max-w-[180px]">
+                <span class="w-1.5 h-1.5 rounded-full bg-radar-accent animate-pulse"></span><span class="truncate">{{ pipelineStatuses[project.id].message }}</span>
+              </div></div></div><!-- Empty State -->
           <div v-if="projects.length === 0" class="col-span-full py-20 text-center border border-dashed border-radar-border rounded-lg">
              <p class="text-radar-dim">No projects found. Start by creating one above.</p>
 </div></div><!-- Agent Fleet (Small view in Dashboard) -->
@@ -106,6 +109,12 @@
                   </span></div><div v-if="agent.goal" class="text-radar-muted truncate">{{ agent.goal }}</div></div></div></section></div><!-- WORKSPACE VIEW -->
       <div v-else class="max-w-[1600px] mx-auto space-y-4">
         <!-- Workspace Header & Tabs -->
+        <!-- Pipeline Status Banner -->
+        <div v-if="activePipelineStatus" class="bg-radar-panel border border-radar-accent/30 rounded-lg p-3 mb-2 fade-in flex items-center gap-3">
+          <span class="w-2.5 h-2.5 rounded-full bg-radar-accent animate-pulse"></span><div class="flex-1 min-w-0">
+            <span class="text-[10px] uppercase tracking-widest text-radar-dim font-bold">Pipeline</span><span class="text-xs text-radar-accent ml-2 truncate">{{ activePipelineStatus.message }}</span>
+          </div><span class="text-[10px] text-radar-dim uppercase tracking-wider whitespace-nowrap">{{ activePipelineStatus.phase }}</span>
+        </div>
         <header class="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-2 fade-in">
           <div class="flex items-center gap-4">
             <button @click="viewMode = 'PROJECT_LIST'" class="text-radar-muted hover:text-radar-accent transition-colors flex items-center gap-1 text-sm">
@@ -236,6 +245,7 @@
         const projects = ref([]);
         const allClarifications = ref([]);
         const storyKanban = ref({});
+        const pipelineStatuses = ref({});
 
         // Project Creation State
         const newProjectName = ref('');
@@ -272,6 +282,13 @@
         // --- Computed Properties (with Filtering) ---
 
         const activeProject = computed(() => projects.value.find(p => p.id === activeProjectId.value));
+
+        const activePipelineStatus = computed(() => {
+          if (activeProjectId.value) {
+            return pipelineStatuses.value[activeProjectId.value] || null;
+          }
+          return null;
+        });
 
         const filteredTasks = computed(() => {
           if (viewMode.value === 'WORKSPACE' && activeProjectId.value) {
@@ -603,8 +620,18 @@
                 syncKanbanFromTasks();
               } else if (data.type === 'state_update') {
                 if (data.kanban) kanbanState.value = data.kanban;
-              } else if (data.type === 'event_update') {
+               } else if (data.type === 'event_update') {
                 events.value = [...events.value, ...data.events];
+                // Handle pipeline status events
+                for (const ev of data.events) {
+                  if (ev.type === 'tool:project' && ev.action === 'pipeline_status') {
+                    pipelineStatuses.value[ev.project_id] = {
+                      phase: ev.phase,
+                      message: ev.message,
+                      timestamp: ev.timestamp,
+                    };
+                  }
+                }
                 nextTick(scrollToBottom);
               } else if (data.type === 'telemetry_update') {
                 const idx = agents.value.findIndex(a => a.agent_id === data.data.agent_id);
@@ -612,7 +639,15 @@
                 else agents.value.push(data.data);
               } else if (data.type === 'clarification_update') {
                 if (data.pending) await Promise.all([fetchClarifications(), fetchProjects()]);
-              } else if (data.type === 'project_update' || data.type === 'stage_gate_update') {
+               } else if (data.type === 'project_update' || data.type === 'stage_gate_update') {
+                // Handle pipeline status from project_update
+                if (data.data && data.data.phase && data.data.message) {
+                  pipelineStatuses.value[data.data.project_id || activeProjectId.value] = {
+                    phase: data.data.phase,
+                    message: data.data.message,
+                    timestamp: new Date().toISOString(),
+                  };
+                }
                 await Promise.all([fetchProjects(), fetchRegistry(), fetchKanban(), fetchStoryKanban(), fetchClarifications()]);
               }
             } catch (err) { console.error('WS error:', err); }
@@ -649,7 +684,7 @@
           submitForVerification, runQAGate, runArchitectGate, runFullPipeline,
           newProjectName, newProjectDescription, submitting, submitResult,
           submitNewProject, selectProject, clarificationAnswers, answerClarification,
-          promptInput, sendPrompt, projectStatusBadge, storyColumnItems
+           promptInput, sendPrompt, projectStatusBadge, storyColumnItems, activePipelineStatus
         };
       }
     }).mount('#app');

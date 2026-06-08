@@ -15,9 +15,12 @@ ENV/
 # Project specific
 logs/
 runtime_logs/
+state/*.json
 state/
 state.old/
 user_projects.old/
+user_projects/
+tasks/*.json
 sdlc_ai.egg-info/
 
 # Testing and artifacts
