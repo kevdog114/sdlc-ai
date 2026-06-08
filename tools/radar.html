@@ -3,10 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Command Center — Radar</title>
-  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>
+  <title>Command Center — Radar</title><script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script><script src="https://cdn.tailwindcss.com"></script><script>
     tailwind.config = {
       theme: {
         extend: {
@@ -37,8 +34,7 @@
         }
       }
     }
-  </script>
-  <style>
+  </script><style>
     * { scrollbar-width: thin; scrollbar-color: #1e293b #0a0e17; }
     ::-webkit-scrollbar { width: 6px; }
     ::-webkit-scrollbar-track { background: #0a0e17; }
@@ -46,207 +42,247 @@
     .terminal-text { font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace; }
     @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
     .fade-in { animation: fadeIn 0.3s ease-out; }
-  </style>
-</head>
-<body class="bg-radar-bg text-radar-text min-h-screen">
+    .line-clamp-3 { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+  </style></head><body class="bg-radar-bg text-radar-text min-h-screen">
   <div id="app">
-    <!-- Header -->
-    <header class="border-b border-radar-border bg-radar-panel px-6 py-3 flex items-center justify-between">
+    <!-- Global Header -->
+<header class="border-b border-radar-border bg-radar-panel px-6 py-3 flex items-center justify-between sticky top-0 z-50">
       <div class="flex items-center gap-3">
-        <div class="w-3 h-3 rounded-full bg-radar-accent animate-pulse-slow"></div>
-        <h1 class="text-lg font-bold tracking-wider text-radar-accent">COMMAND CENTER</h1>
-        <span class="text-xs text-radar-dim uppercase tracking-widest">Live Radar</span>
-      </div>
-      <div class="flex items-center gap-4 text-xs text-radar-muted">
+        <div class="w-3 h-3 rounded-full bg-radar-accent animate-pulse-slow"></div><h1 class="text-lg font-bold tracking-wider text-radar-accent">COMMAND CENTER</h1><span class="text-xs text-radar-dim uppercase tracking-widest" v-if="viewMode === 'PROJECT_LIST'">Global Radar</span><span class="text-xs text-radar-dim uppercase tracking-widest" v-else>Workspace: {{ activeProject?.name }}</span></div><div class="flex items-center gap-4 text-xs text-radar-muted">
         <span class="flex items-center gap-1.5">
-          <span :class="connectionDot"></span>
-          {{ connectionLabel }}
-        </span>
-        <span>Agents: {{ activeAgentCount }}</span>
-        <span>Tasks: {{ taskStats.done }}/{{ totalTasks }}</span>
-        <span id="clock">{{ clock }}</span>
-      </div>
-    </header>
-
-    <!-- Main Grid -->
-    <main class="grid grid-cols-12 gap-4 p-4 h-[calc(100vh-57px)]">
-      <!-- Agent Fleet (left column) -->
-      <section class="col-span-3 flex flex-col bg-radar-panel rounded-lg border border-radar-border overflow-hidden">
-        <div class="px-4 py-2.5 border-b border-radar-border bg-radar-panel">
-          <h2 class="text-xs font-semibold uppercase tracking-widest text-radar-muted">Agent Fleet</h2>
-        </div >
-        <div class="flex-1 overflow-y-auto p-3 space-y-2">
-          <div v-if="agents.length === 0" class="text-center py-8 text-radar-dim text-xs">
-            No active agents
-          </div >
-          <div
-            v-for="agent in agents"
-            :key="agent.agent_id"
-            class="fade-in bg-radar-bg rounded-lg border border-radar-border p-3"
-          >
-            <div class="flex items-center justify-between mb-2">
-              <span class="text-sm font-semibold text-radar-text">{{ agent.agent_id }}</span>
-              <span
-                class="flex items-center gap-1.5 text-xs px-2 py-0.5 rounded-full"
-                :class="agentStatusClass(agent.state)"
-              >
-                <span :class="agentPulseClass(agent.state)"></span>
-                {{ agentStatusLabel(agent.state) }}
-              </span >
-            </div >
-            <div class="text-xs text-radar-muted space-y-1">
-              <div v-if="agent.persona">Persona: <span class="text-radar-accent">{{ agent.persona }}</span></div >
-              <div v-if="agent.goal">Goal: <span class="text-radar-text truncate block">{{ agent.goal }}</span></div >
-            </div >
-          </div >
-        </div >
-      </section>
-
-      <!-- Mission Map (center) -->
-      <section class="col-span-5 flex flex-col bg-radar-panel rounded-lg border border-radar-border overflow-hidden">
-        <div class="px-4 py-2.5 border-b border-radar-border bg-radar-panel">
-          <h2 class="text-xs font-semibold uppercase tracking-widest text-radar-muted">Mission Map</h2>
-        </div >
-
-        <!-- Progress Summary -->
-        <div class="px-4 py-3 border-b border-radar-border grid grid-cols-4 gap-2">
-          <div class="text-center">
-            <div class="text-2xl font-bold text-radar-warning">{{ taskStats.pending }}</div>
-            <div class="text-[10px] uppercase tracking-wider text-radar-dim">Pending</div>
-          </div >
-          <div class="text-center">
-            <div class="text-2xl font-bold text-radar-accent">{{ taskStats.in_progress }}</div>
-            <div class="text-[10px] uppercase tracking-wider text-radar-dim">In Progress</div>
-          </div >
-          <div class="text-center">
-            <div class="text-2xl font-bold text-radar-success">{{ taskStats.done }}</div>
-            <div class="text-[10px] uppercase tracking-wider text-radar-dim">Done</div>
-          </div >
-          <div class="text-center">
-            <div class="text-2xl font-bold text-radar-text">{{ totalTasks }}</div>
-            <div class="text-[10px] uppercase tracking-wider text-radar-dim">Total</div>
-          </div >
-        </div >
-
-        <!-- Progress Bar -->
-        <div class="px-4 py-2">
-          <div class="h-1.5 bg-radar-bg rounded-full overflow-hidden">
-            <div
-              class="h-full bg-gradient-to-r from-radar-accent to-radar-success transition-all duration-500"
-              :style="{ width: progressPercent + '%' }"
-            ></div >
-          </div >
-          <div class="text-right text-[10px] text-radar-dim mt-0.5">{{ progressPercent }}% complete</div>
-        </div >
-
-        <!-- Task List -->
-        <div class="flex-1 overflow-y-auto p-3 space-y-1.5">
-          <div v-if="tasks.length === 0" class="text-center py-8 text-radar-dim text-xs">
-            No tasks in registry
-          </div >
-          <div
-            v-for="task in sortedTasks"
-            :key="task.id"
-            class="fade-in flex items-center gap-3 px-3 py-2 rounded-lg bg-radar-bg border border-radar-border"
-          >
-            <span
-              class="w-2 h-2 rounded-full flex-shrink-0"
-              :class="taskStatusDot(task.status)"
-            ></span >
-            <div class="flex-1 min-w-0">
-              <div class="text-xs text-radar-text truncate">{{ task.description }}</div >
-              <div class="text-[10px] text-radar-dim">
-                #{{ task.id }} &middot; {{ task.agent || 'unassigned' }}
-              </div >
-            </div >
-            <span
-              class="text-[10px] px-2 py-0.5 rounded-full font-medium flex-shrink-0"
-              :class="taskStatusBadge(task.status)"
+          <span :class="connectionDot"></span>{{ connectionLabel }}
+        </span><span v-if="viewMode === 'PROJECT_LIST'">Agents: {{ activeAgentCount }} | Tasks: {{ taskStats?.done || 0 }}/{{ totalTasks || 0 }}</span><span id="clock">{{ clock }}</span></div></header><!-- Main Content -->
+    <main class="p-4">
+      <!-- PROJECT LIST VIEW -->
+      <div v-if="viewMode === 'PROJECT_LIST'" class="max-w-7xl mx-auto space-y-6">
+        
+        <!-- Add Project Section -->
+        <section class="bg-radar-panel border border-radar-border rounded-lg p-4 fade-in">
+          <h2 class="text-xs font-semibold uppercase tracking-widest text-radar-dim mb-3">Initialize New Project</h2><div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <input 
+              v-model="newProjectName" 
+              placeholder="Project Name..." 
+              class="bg-radar-bg border border-radar-border rounded px-3 py-2 text-sm focus:outline-none focus:border-radar-accent"
+            />
+            <input 
+              v-model="newProjectDescription" 
+              placeholder="Brief description..." 
+              class="bg-radar-bg border border-radar-border rounded px-3 py-2 text-sm focus:outline-none focus:border-radar-accent"
+            />
+            <button 
+              @click="submitNewProject"
+              :disabled="submitting || !newProjectName"
+              class="bg-radar-accent text-black font-bold rounded px-4 py-2 hover:bg-radar-accent/80 transition-colors disabled:opacity-50 text-sm"
             >
-              {{ task.status }}
-            </span >
-          </div >
-        </div >
-      </section>
-
-      <!-- Thought Stream (right column) -->
-      <section class="col-span-4 flex flex-col bg-radar-panel rounded-lg border border-radar-border overflow-hidden">
-        <div class="px-4 py-2.5 border-b border-radar-border bg-radar-panel flex items-center justify-between">
-          <h2 class="text-xs font-semibold uppercase tracking-widest text-radar-muted">Thought Stream</h2>
-          <span class="text-[10px] text-radar-dim">{{ events.length }} events</span>
-        </div >
-        <div
-          ref="streamContainer"
-          class="flex-1 overflow-y-auto p-3 terminal-text text-xs space-y-0.5"
-        >
-          <div v-if="events.length === 0" class="text-center py-8 text-radar-dim text-xs">
-            Waiting for events...
-          </div >
-          <div
-            v-for="(event, idx) in displayedEvents"
-            :key="idx"
-            class="fade-in py-1 border-b border-radar-border/30 last:border-0"
+              {{ submitting ? 'Processing...' : 'Create Project' }}
+            </button></div><div v-if="submitResult" class="mt-2 text-xs" :class="submitResult.success ? 'text-radar-success' : 'text-radar-danger'">
+            {{ submitResult.message || submitResult.error }}
+</div></section><!-- Project Grid -->
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div 
+            v-for="project in projects" 
+            :key="project.id"
+            @click="selectProject(project.id)"
+            class="group bg-radar-panel border border-radar-border rounded-lg p-5 hover:border-radar-accent/50 transition-all cursor-pointer fade-in flex flex-col justify-between h-48"
           >
-            <span class="text-radar-dim">[{{ eventTime(event.timestamp) }}]</span >
-            <span class="mx-1.5" :class="eventTypeColor(event.type)">{{ event.type }}</span >
-            <span class="text-radar-muted">{{ eventSummary(event) }}</span >
-          </div >
-        </div >
-      </section>
-    </main>
-  </div >
-
-  <script>
-    const { createApp, ref, computed, onMounted, onUnmounted, nextTick } = Vue;
+            <div>
+              <div class="flex justify-between items-start mb-2">
+                <h3 class="text-lg font-bold text-radar-text group-hover:text-radar-accent transition-colors">{{ project.name }}</h3><span :class="projectStatusBadge(project.status)" class="text-[10px] px-2 py-0.5 rounded-full uppercase font-medium">
+                  {{ project.status }}
+                </span></div><p class="text-sm text-radar-muted line-clamp-3">{{ project.description }}</p>
+</div><div class="flex justify-between items-center mt-4 pt-4 border-t border-radar-border/50">
+              <span class="text-[10px] text-radar-dim uppercase tracking-widest">Phase: {{ project.phase }}</span><span v-if="project.clarifications?.pending > 0" class="text-xs text-radar-warning flex items-center gap-1">
+                <span class="w-1.5 h-1.5 rounded-full bg-radar-warning animate-pulse"></span>{{ project.clarifications.pending }} Clarifications
+              </span></div></div><!-- Empty State -->
+          <div v-if="projects.length === 0" class="col-span-full py-20 text-center border border-dashed border-radar-border rounded-lg">
+             <p class="text-radar-dim">No projects found. Start by creating one above.</p>
+</div></div><!-- Agent Fleet (Small view in Dashboard) -->
+        <section v-if="agents.length > 0" class="mt-12">
+           <h2 class="text-xs font-semibold uppercase tracking-widest text-radar-dim mb-4">Global Agent Fleet</h2><div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
+              <div v-for="agent in agents" :key="agent.agent_id" class="bg-radar-panel border border-radar-border p-3 rounded-lg text-xs">
+                <div class="flex items-center justify-between mb-2">
+                  <span class="font-bold text-radar-accent">{{ agent.agent_id }}</span><span :class="agentStatusClass(agent.state)" class="px-1.5 py-0.5 rounded text-[9px] uppercase font-medium">
+                    {{ agentStatusLabel(agent.state) }}
+                  </span></div><div v-if="agent.goal" class="text-radar-muted truncate">{{ agent.goal }}</div></div></div></section></div><!-- WORKSPACE VIEW -->
+      <div v-else class="max-w-[1600px] mx-auto space-y-4">
+        <!-- Workspace Header & Tabs -->
+        <header class="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-2 fade-in">
+          <div class="flex items-center gap-4">
+            <button @click="viewMode = 'PROJECT_LIST'" class="text-radar-muted hover:text-radar-accent transition-colors flex items-center gap-1 text-sm">
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" /></svg>Back>>>>> to Projects
+            </button><div class="h-6 w-[1px] bg-radar-border hidden md:block"></div><h2 class="text-xl font-bold">{{ activeProject?.name }}</h2></div><nav class="flex bg-radar-panel border border-radar-border rounded-lg p-1">
+            <button 
+              v-for="tab in ['Prompt', 'Board', 'Clarifications']" 
+              :key="tab"
+              @click="activeTab = tab"
+              :class="activeTab === tab ? 'bg-radar-accent text-black shadow-lg' : 'text-radar-muted hover:text-radar-text'"
+              class="px-6 py-1.5 rounded-md text-sm font-medium transition-all"
+            >
+              {{ tab }}
+            </button></nav></header><!-- Workspace Content Grid -->
+        <div class="grid grid-cols-12 gap-4">
+          <!-- Main Tab Area (9 cols) -->
+          <div class="col-span-12 lg:col-span-9 min-h-[60vh]">
+            
+            <!-- TAB: PROMPT -->
+            <section v-if="activeTab === 'Prompt'" class="bg-radar-panel border border-radar-border rounded-lg p-6 fade-in">
+              <div class="max-w-3xl mx-auto space-y-6">
+                <div>
+                  <h3 class="text-lg font-semibold mb-1">Project Interaction</h3><p class="text-sm text-radar-dim">Send natural language instructions or queries to your project agents.</p>
+</div><div class="bg-radar-bg rounded-lg border border-radar-border p-4 h-64 overflow-y-auto terminal-text text-sm space-y-2">
+                   <div v-if="events.length === 0" class="text-radar-dim italic text-center mt-10">No interaction history yet...</div><div v-for="(event, idx) in displayedEvents" :key="idx" class="fade-in border-b border-radar-border/30 pb-2 last:border-0">
+                   <span class="text-radar-dim mr-1">[{{ eventTime(event.timestamp) }}]</span><span :class="eventTypeColor(event.type || '')" class="font-bold mr-1">{{ (event.type || '').split(':').pop() }}</span><span class="text-radar-muted">{{ eventSummary(event) }}</span></div></div><div class="flex gap-3">
+                  <input 
+                    v-model="promptInput" 
+                    @keyup.enter="sendPrompt"
+                    placeholder="Enter command or request..." 
+                    class="flex-1 bg-radar-bg border border-radar-border rounded px-4 py-3 text-sm focus:outline-none focus:border-radar-accent"
+                  />
+                  <button @click="sendPrompt" class="px-6 py-3 bg-radar-accent text-black font-bold rounded hover:bg-radar-accent/80 transition-colors">
+                    Send
+                  </button></div></div></section><!-- TAB: BOARD -->
+            <section v-else-if="activeTab === 'Board'" class="fade-in">
+               <div class="flex items-center justify-between mb-4 px-2">
+                  <h3 class="text-sm font-semibold text-radar-dim uppercase tracking-widest">Kanban & Stories</h3><!-- Mini view switcher for tasks/stories if needed -->
+                  <select v-model="taskViewMode" class="bg-radar-panel border border-radar-border rounded text-[10px] px-2 py-1 outline-none">
+                     <option value="kanban">Kanban View</option><option value="list">List View</option><option value="stories">Story Board</option></select></div><!-- Kanban -->
+               <div v-if="taskViewMode === 'kanban'" class="flex gap-3 overflow-x-auto pb-4 min-h-[50vh]">
+                  <div v-for="col in kanbanColumns" :key="col.key" class="flex-1 min-w-[280px] bg-radar-bg/30 rounded-lg border border-radar-border flex flex-col">
+                    <div class="px-4 py-3 border-b border-radar-border flex items-center justify-between">
+                      <span class="text-xs font-bold uppercase tracking-wider" :class="col.color">{{ col.label }}</span><span class="text-[10px] bg-radar-panel px-2 py-0.5 rounded text-radar-dim">{{ kanbanColumnTasks(col.key).length }}</span></div><div class="flex-1 overflow-y-auto p-3 space-y-3">
+                      <div v-for="task in kanbanColumnTasks(col.key)" :key="task.id" class="bg-radar-panel border border-radar-border p-3 rounded-lg shadow-sm hover:border-radar-accent/50 transition-colors fade-in">
+                        <div class="text-xs text-radar-text mb-2 line-clamp-3">{{ task.description }}</div><div class="flex items-center justify-between text-[10px] text-radar-dim">
+                          <span>#{{ task.id }}</span><span>{{ task.agent || '?' }}</span></div><!-- Task Actions -->
+                        <div class="mt-3 flex flex-wrap gap-1 border-t border-radar-border/50 pt-2">
+                           <button v-if="task.status === 'in_progress'" @click="submitForVerification(task.id)" class="text-[9px] px-2 py-1 rounded bg-radar-accent/20 text-radar-accent hover:bg-radar-accent/30">Verify</button><button v-if="['pending_verification', 'testing'].includes(task.status)" @click="runQAGate(task.id)" class="text-[9px] px-2 py-1 rounded bg-purple-400/20 text-purple-400">QA Gate</button><button v-if="['testing_passed', 'architect_review'].includes(task.status)" @click="runArchitectGate(task.id)" class="text-[9px] px-2 py-1 rounded bg-yellow-400/20 text-yellow-400">Arch Review</button><button v-if="['in_progress', 'pending_verification'].includes(task.status)" @click="runFullPipeline(task.id)" class="text-[9px] px-2 py-1 rounded bg-radar-success/20 text-radar-success">Full Pipeline</button></div></div></div></div></div><!-- List -->
+               <div v-else-if="taskViewMode === 'list'" class="bg-radar-panel border border-radar-border rounded-lg overflow-hidden fade-in">
+                 <table class="w-full text-left text-sm">
+                   <thead class="bg-radar-bg/50 text-radar-dim uppercase text-[10px] tracking-widest font-bold">
+                     <tr>
+                       <th class="px-4 py-3">ID</th><th class="px-4 py-3">Description</th><th class="px-4 py-3">Agent</th><th class="px-4 py-3">Status</th></tr></thead><tbody>
+                     <tr v-for="task in sortedTasks" :key="task.id" class="border-t border-radar-border hover:bg-radar-accent/5 transition-colors">
+                       <td class="px-4 py-3 text-radar-dim font-mono text-[10px]">#{{ task.id }}</td><td class="px-4 py-3">{{ task.description }}</td><td class="px-4 py-3 text-radar-muted">{{ task.agent || '-' }}</td><td class="px-4 py-3"><span :class="taskStatusBadge(task.status)" class="text-[10px] px-2 py-0.5 rounded-full font-medium uppercase">{{ task.status }}</span></td></tr></tbody></table></div><!-- Stories -->
+               <div v-else-if="taskViewMode === 'stories'" class="flex gap-3 overflow-x-auto pb-4 fade-in">
+                  <div v-for="col in storyColumns" :key="col.key" class="flex-1 min-w-[280px] bg-radar-bg/30 rounded-lg border border-radar-border flex flex-col">
+                    <div class="px-4 py-3 border-b border-radar-border flex items-center justify-between">
+                      <span class="text-xs font-bold uppercase tracking-wider" :class="col.color">{{ col.label }}</span><span class="text-[10px] bg-radar-panel px-2 py-0.5 rounded text-radar-dim">{{ storyColumnItems(col.key).length }}</span></div><div class="flex-1 overflow-y-auto p-3 space-y-3">
+                      <div v-for="story in storyColumnItems(col.key)" :key="story.id" class="bg-radar-panel border border-radar-border p-3 rounded-lg fade-in shadow-sm">
+                        <div class="flex items-center justify-between mb-2">
+                          <span class="text-[10px] font-bold text-radar-accent">{{ story.id }}</span><span :class="priorityBadge(story.priority)" class="text-[9px] px-1.5 py-0.5 rounded uppercase font-bold">{{ story.priority }}</span></div><div class="text-xs text-radar-text mb-3 line-clamp-2">{{ story.title }}</div><div class="space-y-1">
+                           <div class="flex items-center justify-between text-[9px] text-radar-dim">
+                             <span>{{ story.progress ? story.progress.done_tasks : 0 }}/{{ story.progress ? story.progress.total_tasks : 0 }} tasks</span><span>{{ story.progress ? story.progress.percent : 0 }}%</span></div><div class="h-1 bg-radar-bg rounded-full overflow-hidden">
+                              <div class="h-full bg-gradient-to-r from-radar-accent to-radar-success transition-all" :style="{ width: (story.progress ? story.progress.percent : 0) + '%' }"></div></div></div></div></div></div></div></section><!-- TAB: CLARIFICATIONS -->
+            <section v-else-if="activeTab === 'Clarifications'" class="bg-radar-panel border border-radar-border rounded-lg p-6 fade-in">
+              <div class="max-w-2xl mx-auto space-y-4">
+                <div class="flex items-center justify-between mb-4">
+                  <h3 class="text-lg font-semibold">Pending Clarifications</h3><span class="bg-radar-warning/20 text-radar-warning px-2 py-1 rounded text-xs font-bold">{{ filteredClarifications?.length || 0 }} Pending</span></div><div v-if="filteredClarifications.length === 0" class="text-center py-20 text-radar-dim italic">
+                  All questions answered for this project.
+</div><div 
+                  v-for="clr in filteredClarifications" 
+                  :key="clr.id" 
+                  class="bg-radar-bg border border-radar-border rounded-lg p-5 space-y-4 fade-in"
+                >
+                  <div>
+                    <div class="flex items-center justify-between mb-2">
+                      <span class="text-xs font-bold text-radar-accent">#{{ clr.id }}</span><span class="text-[10px] uppercase tracking-wider text-radar-dim">{{ clr.phase }}</span></div><p class="text-sm text-radar-text leading-relaxed">{{ clr.question }}</p>
+                    <div v-if="clr.context" class="mt-3 text-[11px] italic text-radar-dim bg-radar-panel/50 p-2 rounded">
+                      Context: {{ clr.context }}
+</div></div><div class="flex gap-2">
+                    <input 
+                      v-model="clarificationAnswers[clr.id]" 
+                      @keyup.enter="answerClarification(clr.id)"
+                      placeholder="Provide answer..." 
+                      class="flex-1 bg-radar-bg border border-radar-border rounded px-3 py-2 text-sm focus:outline-none focus:border-radar-accent"
+                    />
+                    <button @click="answerClarification(clr.id)" class="px-4 py-2 bg-radar-success/20 text-radar-success text-xs font-bold rounded hover:bg-radar-success/30 transition-colors">
+                      Answer
+                    </button></div></div></div></section></div><!-- Sidebar (3 cols) -->
+          <aside class="col-span-12 lg:col-span-3 space-y-4 h-full">
+             <!-- Clarifications Mini-Panel (only if active in workspace or global) -->
+             <div v-if="filteredClarifications.length > 0" class="bg-radar-panel border border-radar-border rounded-lg overflow-hidden fade-in">
+                <div class="px-4 py-2.5 border-b border-radar-border bg-radar-panel/50 flex items-center justify-between">
+                   <h3 class="text-[10px] font-bold uppercase tracking-widest text-radar-warning flex items-center gap-2">
+                     <span class="w-1.5 h-1.5 rounded-full bg-radar-warning animate-pulse"></span>Attention>>>>> Required
+                   </h3></div><div class="max-h-48 overflow-y-auto p-3 space-y-2">
+                  <div v-for="clr in filteredClarifications.slice(0, 5)" :key="clr.id" class="text-[11px] bg-radar-bg border border-radar-border p-2 rounded cursor-pointer hover:border-radar-accent transition-colors" @click="activeTab = 'Clarifications'">
+                    <div class="font-bold text-radar-accent mb-0.5">#{{ clr.id }}</div><div class="text-radar-muted line-clamp-2">{{ clr.question }}</div></div></div></div><!-- Thought Stream -->
+             <div class="bg-radar-panel border border-radar-border rounded-lg flex flex-col min-h-[400px]">
+               <div class="px-4 py-2.5 border-b border-radar-border bg-radar-panel/50 flex items-center justify-between">
+                 <h3 class="text-[10px] font-bold uppercase tracking-widest text-radar-dim">Thought Stream</h3><span class="text-[9px] text-radar-dim">{{events?.length}} logs</span></div><div ref="streamContainer" class="flex-1 overflow-y-auto p-3 terminal-text text-[10px] space-y-1">
+                 <div v-if="events.length === 0" class="text-center py-8 text-radar-dim italic">Waiting for events...</div><div v-for="(event, idx) in displayedEvents" :key="idx" class="fade-in py-1 border-b border-radar-border/30 last:border-0 truncate">
+                   <span class="text-radar-dim mr-1">[{{ eventTime(event.timestamp) }}]</span><span :class="eventTypeColor(event.type || '')" class="font-bold mr-1">{{ (event.type || '').split(':').pop() }}</span><span class="text-radar-muted">{{ eventSummary(event) }}</span></div></div></div></aside></div></div></main></div><script>
+    const { createApp, ref, computed, onMounted, onUnmounted, nextTick, watch } = Vue;
 
     createApp({
       setup() {
+        console.log("[DEBUG] Setup started");
+        // Core State
         const ws = ref(null);
+
         const isConnected = ref(false);
-        const tasks = ref([]);
-        const agents = ref([]);
-        const events = ref([]);
         const clock = ref('');
         const streamContainer = ref(null);
 
-        let clockInterval = null;
-        let reconnectTimer = null;
+        // View Modes
+        const viewMode = ref('PROJECT_LIST'); // 'PROJECT_LIST', 'WORKSPACE'
+        const activeProjectId = ref(null);
+        const activeTab = ref('Prompt'); // 'Prompt', 'Board', 'Clarifications'
+        const taskViewMode = ref('kanban');
 
-        // Clock
-        const updateClock = () => {
-          const now = new Date();
-          clock.value = now.toLocaleTimeString('en-US', { hour12: false });
-        };
-        updateClock();
+        // Data Arrays
+        const tasks = ref([]);
+        const agents = ref([]);
+        const events = ref([]);
+        const projects = ref([]);
+        const allClarifications = ref([]);
+        const storyKanban = ref({});
 
-        // Connection status
-        const connectionDot = computed(() =>
-          isConnected.value
-            ? 'w-2 h-2 rounded-full bg-radar-success'
-            : 'w-2 h-2 rounded-full bg-radar-danger animate-pulse'
-        );
-        const connectionLabel = computed(() =>
-          isConnected.value ? 'LIVE' : 'CONNECTING...'
-        );
+        // Project Creation State
+        const newProjectName = ref('');
+        const newProjectDescription = ref('');
+        const submitting = ref(false);
+        const submitResult = ref(null);
 
-        // Task stats (Derived from Registry)
-        const taskStats = computed(() => {
-          const stats = { pending: 0, in_progress: 0, done: 0, failed: 0 };
-          for (const t of tasks.value) {
-            const s = t.status || 'pending';
-            if (s in stats) stats[s]++;
-          }
-          return stats;
+        // Interaction/Clarification State
+        const promptInput = ref('');
+        const clarificationAnswers = ref({});
+        const kanbanState = ref({});
+
+        // Constants
+        const kanbanColumns = [
+          { key: 'backlog', label: 'Backlog', color: 'text-radar-warning' },
+          { key: 'in_progress', label: 'In Progress', color: 'text-radar-accent' },
+          { key: 'testing', label: 'Testing', color: 'text-purple-400' },
+          { key: 'architect_review', label: 'Arch Review', color: 'text-yellow-400' },
+          { key: 'done', label: 'Done', color: 'text-radar-success' },
+        ];
+        watch([() => viewMode.value, () => activeProjectId.value], ([newView, newId]) => {
+          console.log("[DEBUG] View changed:", newView, "ID:", newId);
         });
-        const totalTasks = computed(() => tasks.value.length);
-        const progressPercent = computed(() =>
-          totalTasks.value === 0 ? 0 : Math.round((taskStats.value.done / totalTasks.value) * 100)
-        );
 
-        // Sorted tasks: in_progress first, then pending, then done/failed
+
+        const storyColumns = [
+          { key: 'backlog', label: 'Backlog', color: 'text-radar-warning' },
+          { key: 'in_progress', label: 'In Progress', color: 'text-radar-accent' },
+          { key: 'testing', label: 'Testing', color: 'text-purple-400' },
+          { key: 'architect_review', label: 'Arch Review', color: 'text-yellow-400' },
+          { key: 'done', label: 'Done', color: 'text-radar-success' },
+        ];
+
+        // --- Computed Properties (with Filtering) ---
+
+        const activeProject = computed(() => projects.value.find(p => p.id === activeProjectId.value));
+
+        const filteredTasks = computed(() => {
+          if (viewMode.value === 'WORKSPACE' && activeProjectId.value) {
+            return tasks.value.filter(t => t.project_id === activeProjectId.value);
+          }
+          return tasks.value;
+        });
+
         const sortedTasks = computed(() => {
           const order = { in_progress: 0, pending: 1, failed: 2, escalated: 3, done: 4 };
-          return [...tasks.value].sort((a, b) => {
+          return [...filteredTasks.value].sort((a, b) => {
             const oa = order[a.status] ?? 5;
             const ob = order[b.status] ?? 5;
             if (oa !== ob) return oa - ob;
@@ -254,70 +290,81 @@
           });
         });
 
-        // Agent Status Helpers
-        const agentStatusClass = (state) => {
-          if (!state) return 'bg-radar-dim/10 text-radar-dim';
-          switch(state) {
-            case 'thinking': 
-            case 'working':
-              return 'bg-radar-accent/10 text-radar-accent';
-            case 'error':
-              return 'bg-radar-danger/10 text-radar-danger';
-            default:
-              return 'bg-radar-dim/10 text-radar-dim';
+        const filteredClarifications = computed(() => {
+          if (viewMode.value === 'WORKSPACE' && activeProjectId.value) {
+            return allClarifications.value.filter(c => c.project_id === activeProjectId.value && c.status === 'pending');
           }
+          // In Dashboard mode, show all pending ones
+          return allClarifications.value.filter(c => c.status === 'pending');
+        });
+
+        const taskStats = computed(() => {
+          const stats = { pending: 0, in_progress: 0, done: 0, failed: 0 };
+          for (const t of filteredTasks.value) {
+            const s = t.status || 'pending';
+            if (s in stats) stats[s]++;
+          }
+          return stats;
+        });
+
+        const totalTasks = computed(() => filteredTasks.value.length);
+        const progressPercent = computed(() => 
+          totalTasks.value === 0 ? 0 : Math.round((taskStats.done / totalTasks.value) * 100)
+        );
+
+        const kanbanColumnTasks = (colKey) => {
+          const colIds = kanbanState.value?.[colKey] || [];
+          const taskMap = new Map(filteredTasks.value.map(t => [t.id, t]));
+          return colIds.map(id => taskMap.get(id)).filter(Boolean);
         };
 
-        const agentPulseClass = (state) => {
-          if (!state) return 'w-1.5 h-1.5 rounded-full bg-radar-dim';
-          if (['thinking', 'working'].includes(state)) return 'w-1.5 h-1.5 rounded-full bg-radar-accent animate-pulse';
-          if (state === 'error') return 'w-1.5 h-1.5 rounded-full bg-radar-danger';
-          return 'w-1.5 h-1.5 rounded-full bg-radar-dim';
+        const storyColumnItems = (colKey) => {
+           // For simplicity, assuming stories are global or we filter them if API provides project_id
+           // In a real app, the fetch would include project_id
+           return storyKanban.value?.[colKey] || []; 
+        };
+
+        const displayedEvents = computed(() => events.value.slice(-200));
+
+        const activeAgentCount = computed(() => agents.value.length);
+
+        // --- UI Helpers ---
+
+        const connectionDot = computed(() => isConnected.value ? 'w-2 h-2 rounded-full bg-radar-success' : 'w-2 h-2 rounded-full bg-radar-danger animate-pulse');
+        const connectionLabel = computed(() => isConnected.value ? 'LIVE' : 'CONNECTING...');
+
+        const projectStatusBadge = (status) => {
+          const map = { active: 'bg-radar-accent/10 text-radar-accent', awaiting_clarification: 'bg-radar-warning/10 text-radar-warning', completed: 'bg-radar-success/10 text-radar-success', failed: 'bg-radar-danger/10 text-radar-danger' };
+          return map[status] || 'bg-radar-dim/10 text-radar-dim';
+        };
+
+        const priorityBadge = (p) => {
+          const map = { high: 'bg-radar-danger/10 text-radar-danger', medium: 'bg-radar-warning/10 text-radar-warning', low: 'bg-radar-dim/10 text-radar-dim' };
+          return map[p] || 'bg-radar-dim/10 text-radar-dim';
+        };
+
+        const agentStatusClass = (state) => {
+          if (!state) return 'bg-radar-dim/10 text-radar-dim';
+          if (['thinking', 'working'].includes(state)) return 'bg-radar-accent/10 text-radar-accent';
+          if (state === 'error') return 'bg-radar-danger/10 text-radar-danger';
+          return 'bg-radar-dim/10 text-radar-dim';
         };
 
         const agentStatusLabel = (state) => {
           if (!state) return 'IDLE';
-          switch(state) {
-            case 'thinking': 
-            case 'working': return 'EXECUTING';
-            case 'error': return 'ERROR';
-            default: return state.toUpperCase();
-          }
-        };
-
-        const activeAgentCount = computed(() => agents.value.length);
-
-        // Displayed events (last 200)
-        const displayedEvents = computed(() => events.value.slice(-200));
-
-        // Helpers
-        const taskStatusDot = (status) => {
-          const map = {
-            in_progress: 'bg-radar-accent animate-pulse',
-            pending: 'bg-radar-warning',
-            done: 'bg-radar-success',
-            failed: 'bg-radar-danger',
-            escalated: 'bg-radar-danger',
-          };
-          return map[status] || 'bg-radar-dim';
+          if (['thinking', 'working'].includes(state)) return 'EXECUTING';
+          if (state === 'error') return 'ERROR';
+          return state.toUpperCase();
         };
 
         const taskStatusBadge = (status) => {
-          const map = {
-            in_progress: 'bg-radar-accent/10 text-radar-accent',
-            pending: 'bg-radar-warning/10 text-radar-warning',
-            done: 'bg-radar-success/10 text-radar-success',
-            failed: 'bg-radar-danger/10 text-radar-danger',
-            escalated: 'bg-radar-danger/10 text-radar-danger',
-          };
+          const map = { in_progress: 'bg-radar-accent/10 text-radar-accent', pending: 'bg-radar-warning/10 text-radar-warning', done: 'bg-radar-success/10 text-radar-success', failed: 'bg-radar-danger/10 text-radar-danger', escalated: 'bg-radar-danger/10 text-radar-danger' };
           return map[status] || 'bg-radar-dim/10 text-radar-dim';
         };
 
         const eventTime = (ts) => {
           if (!ts) return '--:--:--';
-          try {
-            return new Date(ts).toLocaleTimeString('en-US', { hour12: false });
-          } catch { return ts.slice(11, 19); }
+          try { return new Date(ts).toLocaleTimeString('en-US', { hour12: false }); } catch { return ts.slice(11, 19); }
         };
 
         const eventTypeColor = (type) => {
@@ -326,6 +373,8 @@
           if (type.startsWith('tool:llm')) return 'text-purple-400';
           if (type.startsWith('tool:registry')) return 'text-radar-success';
           if (type.startsWith('tool:dashboard')) return 'text-yellow-400';
+          if (type.startsWith('tool:project')) return 'text-radar-success';
+          if (type.startsWith('tool:clarification')) return 'text-radar-warning';
           if (type.startsWith('system:')) return 'text-radar-warning';
           return 'text-radar-muted';
         };
@@ -341,37 +390,202 @@
           if (event.success !== undefined) parts.push(`status: ${event.success ? 'ok' : 'fail'}`);
           if (event.error) parts.push(`error: ${event.error}`);
           if (event.phase) parts.push(`phase: ${event.phase}`);
+          if (event.project_id) parts.push(`project: ${event.project_id}`);
+          if (event.ambiguity_count != null) parts.push(`ambiguities: ${event.ambiguity_count}`);
           if (event.component) parts.push(`component: ${event.component}`);
           if (event.new_status) parts.push(`-> ${event.new_status}`);
           return parts.length > 0 ? parts.join(' | ') : JSON.stringify(event).slice(0, 120);
         };
 
-        // API & WebSocket logic
+        // --- API Calls & Actions ---
+
+        const fetchKanban = async () => {
+          try {
+            const res = await fetch('/api/kanban');
+            if (res.ok) kanbanState.value = await res.json();
+          } catch (e) { syncKanbanFromTasks(); }
+        };
+
+        const fetchStoryKanban = async () => {
+          try {
+            const res = await fetch('/api/story-kanban');
+            if (res.ok) storyKanban.value = await res.json();
+          } catch (e) {}
+        };
+
         const fetchAgents = async () => {
           try {
             const res = await fetch('/api/agents');
             if (res.ok) agents.value = await res.json();
-          } catch (e) { console.error('Failed to fetch agents:', e); }
+          } catch (e) {}
         };
 
         const fetchRegistry = async () => {
           try {
             const res = await fetch('/api/registry');
             if (res.ok) tasks.value = (await res.json()).tasks || [];
-          } catch (e) { console.error('Failed to fetch registry:', e); }
+          } catch (e) {}
         };
+
+        const fetchProjects = async () => {
+          try {
+            const res = await fetch('/api/projects');
+            if (res.ok) projects.value = await res.json();
+          } catch (e) {}
+        };
+
+        const fetchClarifications = async () => {
+          try {
+            const res = await fetch('/api/clarifications');
+            if (res.ok) allClarifications.value = await res.json();
+          } catch (e) {}
+        };
+
+        const syncKanbanFromTasks = () => {
+          const board = { backlog: [], in_progress: [], testing: [], architect_review: [], done: [] };
+          const statusMap = {
+            pending: 'backlog', blocked: 'backlog', failed: 'backlog', escalated: 'backlog', rejected: 'backlog',
+            in_progress: 'in_progress', pending_verification: 'testing', testing: 'testing',
+            testing_passed: 'architect_review', architect_review: 'architect_review',
+            done: 'done', completed: 'done'
+          };
+          for (const t of filteredTasks.value) { // use filtered tasks
+            const col = statusMap[t.status] || 'backlog';
+            if (col in board) board[col].push(t.id);
+          }
+          kanbanState.value = board;
+        };
+
+        const submitNewProject = async () => {
+          if (!newProjectName.value.trim() || !newProjectDescription.value.trim() || submitting.value) return;
+          submitting.value = true;
+          submitResult.value = null;
+          try {
+            const res = await fetch('/api/projects/submit', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ 
+                name: newProjectName.value.trim(),
+                description: newProjectDescription.value.trim() 
+              }),
+            });
+            const result = await res.json();
+            if (res.ok) {
+              submitResult.value = result;
+              newProjectName.value = '';
+              newProjectDescription.value = '';
+              setTimeout(async () => {
+                await Promise.all([fetchProjects(), fetchClarifications(), fetchRegistry()]);
+              }, 1000);
+            } else {
+              throw new Error(result.message || 'Submission failed');
+            }
+          } catch (e) {
+            submitResult.value = { success: false, error: e.message };
+          } finally {
+            submitting.value = false;
+          }
+        };
+
+        const selectProject = (id) => {
+          activeProjectId.value = id;
+          viewMode.value = 'WORKSPACE';
+          activeTab.value = 'Board'; // Default to Board for new projects
+        };
+
+        const answerClarification = async (requestId) => {
+          const answer = clarificationAnswers.value[requestId];
+          if (!answer || !answer.trim()) return;
+          try {
+            const res = await fetch('/api/clarifications/answer', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ request_id: requestId, answer: answer.trim() }),
+            });
+            if (res.ok) {
+              clarificationAnswers.value[requestId] = '';
+              await Promise.all([fetchClarifications(), fetchProjects(), fetchRegistry(), fetchKanban()]);
+            }
+          } catch (e) { console.error('Answer error:', e); }
+        };
+
+        const sendPrompt = async () => {
+            if (!promptInput.value.trim()) return;
+            const cmd = promptInput.value.trim();
+            console.log("[DEBUG] Sending prompt:", cmd);
+            promptInput.value = '';
+            try {
+                const res = await fetch(`/api/projects/${activeProjectId.value}/command`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ command: cmd }),
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    console.log("[DEBUG] Command accepted:", data);
+                    await Promise.all([fetchProjects(), fetchClarifications(), fetchRegistry()]);
+                } else {
+                    console.error("[DEBUG] Command failed:", data.error);
+                }
+            } catch (e) {
+                console.error("[DEBUG] Command error:", e);
+            }
+        };
+
+        const submitForVerification = async (taskId) => {
+          try {
+            const res = await fetch('/api/stage-gate/submit', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ task_id: taskId, notes: 'Submitted via Kanban UI' }),
+            });
+            if (res.ok) await Promise.all([fetchRegistry(), fetchKanban()]);
+          } catch (e) {}
+        };
+
+        const runQAGate = async (taskId) => {
+          try {
+            const res = await fetch('/api/stage-gate/qa', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ task_id: taskId }),
+            });
+            if (res.ok) await Promise.all([fetchRegistry(), fetchKanban()]);
+          } catch (e) {}
+        };
+
+        const runArchitectGate = async (taskId) => {
+          try {
+            const res = await fetch('/api/stage-gate/architect', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ task_id: taskId }),
+            });
+            if (res.ok) await Promise.all([fetchRegistry(), fetchKanban()]);
+          } catch (e) {}
+        };
+
+        const runFullPipeline = async (taskId) => {
+          try {
+            const res = await fetch('/api/stage-gate/full', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ task_id: taskId, notes: 'Full pipeline via Kanban UI' }),
+            });
+            await Promise.all([fetchRegistry(), fetchKanban()]);
+          } catch (e) {}
+        };
+
+        // --- WebSocket & Lifecycle ---
 
         const connectWS = () => {
           const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
           const wsUrl = `${protocol}//${window.location.host}/radar-ws`;
-
           ws.value = new WebSocket(wsUrl);
 
           ws.value.onopen = async () => {
             isConnected.value = true;
-            if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-            // Refresh everything on connection
-            await Promise.all([fetchAgents(), fetchRegistry()]);
+            await Promise.all([fetchAgents(), fetchRegistry(), fetchKanban(), fetchStoryKanban(), fetchProjects(), fetchClarifications()]);
           };
 
           ws.value.onmessage = async (e) => {
@@ -380,72 +594,63 @@
               if (data.type === 'initial_state') {
                 tasks.value = data.registry?.tasks || [];
                 events.value = data.events || [];
-                await fetchAgents(); // Sync agents on startup
+                await Promise.all([fetchAgents(), fetchProjects(), fetchClarifications()]);
                 nextTick(scrollToBottom);
               } else if (data.type === 'registry_update') {
                 const existing = new Map(tasks.value.map(t => [t.id, t]));
-                for (const t of data.tasks) {
-                  existing.set(t.id, t);
-                }
+                for (const t of data.tasks) existing.set(t.id, t);
                 tasks.value = Array.from(existing.values()).sort((a, b) => a.id - b.id);
+                syncKanbanFromTasks();
+              } else if (data.type === 'state_update') {
+                if (data.kanban) kanbanState.value = data.kanban;
               } else if (data.type === 'event_update') {
                 events.value = [...events.value, ...data.events];
                 nextTick(scrollToBottom);
               } else if (data.type === 'telemetry_update') {
-                // Live update individual agent entry in the list
-                const telemetry = data.data;
-                const idx = agents.value.findIndex(a => a.agent_id === telemetry.agent_id);
-                if (idx !== -1) {
-                  agents.value[idx] = { ...agents.value[idx], ...telemetry };
-                } else {
-                  agents.value.push(telemetry);
-                }
+                const idx = agents.value.findIndex(a => a.agent_id === data.data.agent_id);
+                if (idx !== -1) agents.value[idx] = { ...agents.value[idx], ...data.data };
+                else agents.value.push(data.data);
+              } else if (data.type === 'clarification_update') {
+                if (data.pending) await Promise.all([fetchClarifications(), fetchProjects()]);
+              } else if (data.type === 'project_update' || data.type === 'stage_gate_update') {
+                await Promise.all([fetchProjects(), fetchRegistry(), fetchKanban(), fetchStoryKanban(), fetchClarifications()]);
               }
-            } catch (err) {
-              console.error('WS parse error:', err);
-            }
+            } catch (err) { console.error('WS error:', err); }
           };
 
           ws.value.onclose = () => {
             isConnected.value = false;
-            reconnectTimer = setTimeout(connectWS, 3000);
-          };
-
-          ws.value.onerror = () => {
-            ws.value?.close();
+            setTimeout(connectWS, 3000);
           };
         };
 
-        const scrollToBottom = () => {
-          if (streamContainer.value) {
-            streamContainer.value.scrollTop = streamContainer.value.scrollHeight;
-          }
-        };
+        const scrollToBottom = () => { if (streamContainer.value) streamContainer.value.scrollTop = streamContainer.value.scrollHeight; };
+        const updateClock = () => { clock.value = new Date().toLocaleTimeString('en-US', { hour12: false }); };
 
         onMounted(() => {
           connectWS();
-          clockInterval = setInterval(updateClock, 1000);
+          setInterval(updateClock, 1000);
+          setInterval(async () => { await Promise.all([fetchProjects(), fetchClarifications()]); }, 5000);
+          updateClock();
         });
 
         onUnmounted(() => {
           if (ws.value) ws.value.close();
-          if (clockInterval) clearInterval(clockInterval);
-          if (reconnectTimer) clearTimeout(reconnectTimer);
         });
 
         return {
-          ws, isConnected, tasks, agents, events, clock,
-          streamContainer,
-          connectionDot, connectionLabel,
-          taskStats, totalTasks, progressPercent,
-          sortedTasks, activeAgentCount,
-          displayedEvents,
-          taskStatusDot, taskStatusBadge,
-          eventTime, eventTypeColor, eventSummary,
-          agentStatusClass, agentPulseClass, agentStatusLabel
+          isConnected, tasks, agents, events, clock, streamContainer,
+           viewMode, activeProjectId, activeTab, taskViewMode, activeProject,
+           projects, kanbanColumns, storyColumns, storyKanban,
+           connectionDot, connectionLabel, taskStats, totalTasks, progressPercent,
+           sortedTasks, filteredClarifications, activeAgentCount, displayedEvents, kanbanColumnTasks,
+          taskStatusBadge, eventTime, eventTypeColor, eventSummary,
+          agentStatusClass, agentStatusLabel, priorityBadge,
+          submitForVerification, runQAGate, runArchitectGate, runFullPipeline,
+          newProjectName, newProjectDescription, submitting, submitResult,
+          submitNewProject, selectProject, clarificationAnswers, answerClarification,
+          promptInput, sendPrompt, projectStatusBadge, storyColumnItems
         };
       }
     }).mount('#app');
-  </script>
-</body>
-</html>
+  </script></body></html>

@@ -16,17 +16,20 @@ from uuid import uuid4
 BASE_DIR = Path(__file__).resolve().parent
 STATE_DIR = BASE_DIR / "state"
 AGENT_JOBS_DIR = STATE_DIR / "agent_jobs"
+INTERFACE_SPECS_DIR = STATE_DIR / "interface_specs"
 TASKS_DIR = BASE_DIR / "tasks"
 LOGS_DIR = BASE_DIR / "logs"
 
 TASK_REGISTRY_PATH = STATE_DIR / "task_registry.json"
+STORY_REGISTRY_PATH = STATE_DIR / "story_registry.json"
 STATE_FILE_PATH = STATE_DIR / "project_state.json"
 EVENT_LOG_PATH = LOGS_DIR / "event_log.jsonl"
+CLARIFICATION_PATH = STATE_DIR / "clarifications.json"
 
 
 def ensure_dirs():
     """Create the required directory structure."""
-    for d in (TASKS_DIR, LOGS_DIR, STATE_DIR, AGENT_JOBS_DIR):
+    for d in (TASKS_DIR, LOGS_DIR, STATE_DIR, AGENT_JOBS_DIR, INTERFACE_SPECS_DIR):
         d.mkdir(parents=True, exist_ok=True)
 
 
@@ -69,6 +72,7 @@ def add_task(
     status: str = "pending",
     dependencies: Optional[List[int]] = None,
     story_id: Optional[str] = None,
+    interface_spec_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Add a new task to the registry and return it."""
     registry = load_json(TASK_REGISTRY_PATH, {})
@@ -83,6 +87,7 @@ def add_task(
         "status": status,
         "dependencies": dependencies or [],
         "story_id": story_id,
+        "interface_spec_id": interface_spec_id,
         "created_at": _now(),
         "updated_at": _now(),
         "verification_artifacts": [],
@@ -99,10 +104,11 @@ def add_task(
 
 
 def update_task_status(task_id: int, status: str, notes: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    """Update a task's status and optionally attach completion notes."""
+    """Update a task's status, optionally attach notes, and sync kanban column."""
     registry = load_json(TASK_REGISTRY_PATH, {})
     for task in registry["tasks"]:
         if task["id"] == task_id:
+            old_status = task["status"]
             task["status"] = status
             task["updated_at"] = _now()
             if notes:
@@ -111,6 +117,23 @@ def update_task_status(task_id: int, status: str, notes: Optional[str] = None) -
 
             task_file = TASKS_DIR / f"task_{task_id}.json"
             save_json(task_file, task)
+
+            # Sync kanban column on status change
+            if old_status != status:
+                try:
+                    from tools.kanban_tool import sync_task_column
+                    sync_task_column(task_id, status)
+                except ImportError:
+                    pass
+
+            append_event(
+                "system:task_update",
+                {
+                    "task_id": task_id,
+                    "old_status": old_status,
+                    "new_status": status,
+                },
+            )
             return task
     return None
 
@@ -131,6 +154,55 @@ def list_tasks(status: Optional[str] = None) -> List[Dict[str, Any]]:
     if status:
         tasks = [t for t in tasks if t["status"] == status]
     return tasks
+
+
+# ── Story Registry ──────────────────────────────────────────────
+
+def init_story_registry() -> Dict[str, Any]:
+    """Create (or return existing) the story registry."""
+    if STORY_REGISTRY_PATH.exists():
+        return load_json(STORY_REGISTRY_PATH, {})
+
+    registry: Dict[str, Any] = {
+        "version": "1.0.0",
+        "stories": [],
+        "next_id": 1,
+    }
+    save_json(STORY_REGISTRY_PATH, registry)
+    return registry
+
+
+# ── Clarification Registry ──────────────────────────────────────
+
+def init_clarification_registry() -> Dict[str, Any]:
+    """Create (or return existing) the clarification registry."""
+    if CLARIFICATION_PATH.exists():
+        return load_json(CLARIFICATION_PATH, {})
+
+    registry: Dict[str, Any] = {
+        "version": "1.0.0",
+        "requests": [],
+        "next_id": 1,
+    }
+    save_json(CLARIFICATION_PATH, registry)
+    return registry
+
+
+# ── Full Initialization ─────────────────────────────────────────
+
+def ensure_initialized() -> None:
+    """Ensure all required directories and state files exist.
+
+    Safe to call multiple times. Creates missing directories and
+    initializes any state files that don't yet exist.
+    """
+    ensure_dirs()
+    init_task_registry()
+    init_story_registry()
+    init_clarification_registry()
+    init_project_state()
+    if not EVENT_LOG_PATH.exists():
+        EVENT_LOG_PATH.touch()
 
 
 # ── Event Log (JSONL) ───────────────────────────────────────────
@@ -169,8 +241,17 @@ def init_project_state(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any
         "human_vision": "",
         "technical_requirements": [],
         "system_architecture": {},
+        "interface_specs": {},
+        "active_spec_id": None,
         "project_config": config or {},
         "kanban": {
+            "backlog": [],
+            "in_progress": [],
+            "testing": [],
+            "architect_review": [],
+            "done": [],
+        },
+        "stories_kanban": {
             "backlog": [],
             "in_progress": [],
             "testing": [],
@@ -193,6 +274,10 @@ def bootstrap():
     print("[bootstrap] Initializing task registry …")
     registry = init_task_registry()
     print(f"[bootstrap] Task registry ready at {TASK_REGISTRY_PATH}")
+
+    print("[bootstrap] Initializing story registry …")
+    story_reg = init_story_registry()
+    print(f"[bootstrap] Story registry ready at {STORY_REGISTRY_PATH}")
 
     print("[bootstrap] Initializing project state …")
     state = init_project_state()

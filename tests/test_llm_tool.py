@@ -65,8 +65,8 @@ class TestQueryLlmSuccess:
 
         with patch('tools.llm_tool.requests.post') as mock_post:
             with patch('tools.llm_tool.append_event'):
-                query_llm("test", endpoint="http://custom:8080/v1/chat")
-            assert mock_post.call_args[0][0] == "http://custom:8080/v1/chat"
+                query_llm("test", base_url="http://custom:8080/v1/chat")
+            assert mock_post.call_args[0][0] == "http://custom:8080/v1/chat/chat/completions"
 
     def test_query_temperature(self):
         mock_response = MagicMock()
@@ -91,7 +91,7 @@ class TestQueryLlmErrors:
                 result = query_llm("test")
             assert result["success"] is False
             assert "error" in result
-            assert "Connection failed" in result["error"]
+            assert "refused" in result["error"]
             mock_event.assert_called_once()
             event_payload = mock_event.call_args[0][1]
             assert event_payload["success"] is False
@@ -138,7 +138,7 @@ class TestQueryLlmLocalEndpoint:
             with patch('tools.llm_tool.append_event'):
                 result = query_llm(
                     "What is 2+2?",
-                    endpoint="http://localhost:4096/v1/chat/completions",
+                    base_url="http://localhost:4096/v1/chat/completions",
                 )
             mock_post.assert_called_once()
             assert mock_post.call_args[0][0] == "http://localhost:4096/v1/chat/completions"

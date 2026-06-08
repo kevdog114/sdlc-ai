@@ -111,10 +111,16 @@ def create_new_task(
     description: str,
     agent: str = "unassigned",
     story_id: Optional[str] = None,
+    interface_spec_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Create a new task via bootstrap.add_task and return the created task."""
     try:
-        task = add_task(description=description, agent=agent, story_id=story_id)
+        task = add_task(
+            description=description,
+            agent=agent,
+            story_id=story_id,
+            interface_spec_id=interface_spec_id,
+        )
         append_event(
             "tool:registry_manager",
             {"action": "create_task", "task_id": task["id"], "success": True},
@@ -131,4 +137,4 @@ def create_new_task(
 if __name__ == "__main__":
     print("[test] Pending tasks:", get_pending_tasks())
     print("[test] Task #1:", get_task_by_id(1))
-    print("[test] Create task:", create_new_task("registry_manager smoke test", agent="hermes", story_id=None))
+    print("[test] Create task:", create_new_task("registry_manager smoke test", agent="system", story_id=None))

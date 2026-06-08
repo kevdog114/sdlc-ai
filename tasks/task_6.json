@@ -2,7 +2,7 @@
   "id": 6,
   "uuid": "a680f75c-b339-470f-b3ea-0a64e78bdc7e",
   "description": "registry_manager smoke test",
-  "agent": "hermes",
+  "agent": "system",
   "status": "pending",
   "dependencies": [],
   "story_id": null,

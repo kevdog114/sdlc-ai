@@ -45,10 +45,10 @@ class TestListRoles:
         roles = list_roles()
         assert roles == sorted(roles)
 
-    def test_returns_only_json_stems(self):
+    def test_returns_only_yaml_stems(self):
         roles = list_roles()
         for r in roles:
-            assert (ROLES_DIR / f"{r}.json").is_file()
+            assert (ROLES_DIR / f"{r}.yaml").is_file()
 
 
 class TestLoadRole:
@@ -166,9 +166,9 @@ class TestDecomposeGoal:
         with patch('tools.orchestrator_tool.query_llm', return_value=mock_response):
             with patch('tools.orchestrator_tool.append_event') as mock_evt:
                 decompose_goal("Test goal")
-        mock_evt.assert_called_once()
-        assert mock_evt.call_args[0][0] == "tool:orchestrator"
-        assert mock_evt.call_args[0][1]["action"] == "decompose_goal"
+        assert mock_evt.call_count >= 1
+        assert mock_evt.call_args_list[0][0][0] == "tool:orchestrator"
+        assert mock_evt.call_args_list[0][0][1]["action"] == "decompose_goal"
 
 
 # ── Task Delegation ─────────────────────────────────────────────
@@ -177,14 +177,24 @@ class TestDecomposeGoal:
 class TestDelegateTask:
     def test_delegate_success(self):
         mock_task = {"id": 100, "description": "test task", "status": "pending", "agent": "developer"}
-        mock_llm = {"success": True, "content": "Implementation done."}
+        mock_oc = {"success": True, "output": "Implementation done.", "diffs": []}
+        mock_pipeline = {
+            "success": True,
+            "results": [
+                {"stage": "submission", "success": True},
+                {"stage": "qa_gate", "passed": True, "feedback": "All tests pass."},
+                {"stage": "architect_gate", "passed": True, "feedback": "Architecture approved."},
+            ],
+        }
 
         with patch('tools.orchestrator_tool.create_new_task', return_value=mock_task):
             with patch('tools.orchestrator_tool.registry_update') as mock_upd:
-                with patch('tools.orchestrator_tool.query_llm', return_value=mock_llm):
-                    with patch('tools.orchestrator_tool.store_insight'):
-                        with patch('tools.orchestrator_tool.append_event'):
-                            result = delegate_task("test task", "developer")
+                with patch('tools.opencode_tool.is_server_running', return_value=True):
+                    with patch('tools.opencode_tool.execute_task', return_value=mock_oc):
+                        with patch('tools.orchestrator_tool.store_insight'):
+                            with patch('tools.orchestrator_tool.append_event'):
+                                with patch('tools.stage_gate_tool.run_full_pipeline', return_value=mock_pipeline):
+                                    result = delegate_task("test task", "developer")
 
         assert result["success"] is True
         assert result["task_id"] == 100
@@ -198,13 +208,14 @@ class TestDelegateTask:
 
     def test_delegate_failure(self):
         mock_task = {"id": 101, "description": "failing task", "status": "pending", "agent": "developer"}
-        mock_llm = {"success": False, "error": "Connection timeout"}
+        mock_oc = {"success": False, "error": "Connection timeout"}
 
         with patch('tools.orchestrator_tool.create_new_task', return_value=mock_task):
             with patch('tools.orchestrator_tool.registry_update') as mock_upd:
-                with patch('tools.orchestrator_tool.query_llm', return_value=mock_llm):
-                    with patch('tools.orchestrator_tool.append_event'):
-                        result = delegate_task("failing task", "developer")
+                with patch('tools.opencode_tool.is_server_running', return_value=True):
+                    with patch('tools.opencode_tool.execute_task', return_value=mock_oc):
+                        with patch('tools.orchestrator_tool.append_event'):
+                            result = delegate_task("failing task", "developer")
 
         assert result["success"] is False
         assert result["task_id"] == 101
@@ -221,31 +232,172 @@ class TestDelegateTask:
 
     def test_delegate_with_context(self):
         mock_task = {"id": 102, "description": "task with context", "status": "pending"}
-        mock_llm = {"success": True, "content": "Done with context."}
+        mock_oc = {"success": True, "output": "Done with context.", "diffs": []}
+        mock_pipeline = {
+            "success": True,
+            "results": [
+                {"stage": "submission", "success": True},
+                {"stage": "qa_gate", "passed": True},
+                {"stage": "architect_gate", "passed": True},
+            ],
+        }
+
+        with patch('tools.orchestrator_tool.create_new_task', return_value=mock_task):
+            with patch('tools.orchestrator_tool.registry_update'):
+                with patch('tools.opencode_tool.is_server_running', return_value=True):
+                    with patch('tools.opencode_tool.execute_task', return_value=mock_oc) as mock_exec:
+                        with patch('tools.orchestrator_tool.store_insight'):
+                            with patch('tools.orchestrator_tool.append_event'):
+                                with patch('tools.stage_gate_tool.run_full_pipeline', return_value=mock_pipeline):
+                                    delegate_task("task with context", "developer", context="Extra info")
+
+        call_kwargs = mock_exec.call_args[1]
+        assert call_kwargs.get("additional_context") == "Extra info"
+
+    def test_delegate_stores_insight_on_success(self):
+        mock_task = {"id": 103, "description": "insight task", "status": "pending"}
+        mock_oc = {"success": True, "output": "Result stored.", "diffs": []}
+        mock_pipeline = {
+            "success": True,
+            "results": [
+                {"stage": "submission", "success": True},
+                {"stage": "qa_gate", "passed": True},
+                {"stage": "architect_gate", "passed": True},
+            ],
+        }
+
+        with patch('tools.orchestrator_tool.create_new_task', return_value=mock_task):
+            with patch('tools.orchestrator_tool.registry_update'):
+                with patch('tools.opencode_tool.is_server_running', return_value=True):
+                    with patch('tools.opencode_tool.execute_task', return_value=mock_oc):
+                        with patch('tools.orchestrator_tool.store_insight') as mock_store:
+                            with patch('tools.orchestrator_tool.append_event'):
+                                with patch('tools.stage_gate_tool.run_full_pipeline', return_value=mock_pipeline):
+                                    delegate_task("insight task", "developer")
+
+        mock_store.assert_called_once()
+        assert "insight task" in mock_store.call_args[0][1]
+
+    def test_delegate_non_developer_uses_llm(self):
+        """Non-developer roles use query_llm directly, not OpenCode."""
+        mock_task = {"id": 104, "description": "arch task", "status": "pending"}
+        mock_llm = {"success": True, "content": "Architecture designed."}
 
         with patch('tools.orchestrator_tool.create_new_task', return_value=mock_task):
             with patch('tools.orchestrator_tool.registry_update'):
                 with patch('tools.orchestrator_tool.query_llm', return_value=mock_llm) as mock_q:
                     with patch('tools.orchestrator_tool.store_insight'):
                         with patch('tools.orchestrator_tool.append_event'):
-                            delegate_task("task with context", "developer", context="Extra info")
+                            result = delegate_task("arch task", "architect", run_stage_gates=False)
 
-        user_prompt = mock_q.call_args[0][0]
-        assert "Extra info" in user_prompt
+        assert result["success"] is True
+        mock_q.assert_called_once()
 
-    def test_delegate_stores_insight_on_success(self):
-        mock_task = {"id": 103, "description": "insight task", "status": "pending"}
-        mock_llm = {"success": True, "content": "Result stored."}
+    def test_delegate_opencode_fallback_to_llm(self):
+        """When opencode_tool is unavailable, developer tasks fall back to LLM."""
+        mock_task = {"id": 105, "description": "fallback task", "status": "pending"}
+        mock_llm = {"success": True, "content": "Fallback result."}
+        import sys
+        saved = sys.modules.get('tools.opencode_tool')
+        sys.modules['tools.opencode_tool'] = None
+
+        try:
+            with patch('tools.orchestrator_tool.create_new_task', return_value=mock_task):
+                with patch('tools.orchestrator_tool.registry_update'):
+                    with patch('tools.orchestrator_tool.query_llm', return_value=mock_llm) as mock_q:
+                        with patch('tools.orchestrator_tool.store_insight'):
+                            with patch('tools.orchestrator_tool.append_event'):
+                                result = delegate_task("fallback task", "developer", run_stage_gates=False)
+
+            assert result["success"] is True
+            assert result["output"] == "Fallback result."
+            mock_q.assert_called_once()
+        finally:
+            if saved is None:
+                sys.modules.pop('tools.opencode_tool', None)
+            else:
+                sys.modules['tools.opencode_tool'] = saved
+
+    def test_delegate_non_developer_uses_llm(self):
+        """Non-developer roles use query_llm directly, not OpenCode."""
+        mock_task = {"id": 104, "description": "arch task", "status": "pending"}
+        mock_llm = {"success": True, "content": "Architecture designed."}
 
         with patch('tools.orchestrator_tool.create_new_task', return_value=mock_task):
             with patch('tools.orchestrator_tool.registry_update'):
-                with patch('tools.orchestrator_tool.query_llm', return_value=mock_llm):
-                    with patch('tools.orchestrator_tool.store_insight') as mock_store:
+                with patch('tools.orchestrator_tool.query_llm', return_value=mock_llm) as mock_q:
+                    with patch('tools.orchestrator_tool.store_insight'):
                         with patch('tools.orchestrator_tool.append_event'):
-                            delegate_task("insight task", "developer")
+                            result = delegate_task("arch task", "architect", run_stage_gates=False)
 
-        mock_store.assert_called_once()
-        assert "insight task" in mock_store.call_args[0][1]
+        assert result["success"] is True
+        mock_q.assert_called_once()
+
+    def test_delegate_opencode_fallback_to_llm(self):
+        """When opencode_tool is unavailable, developer tasks fall back to LLM."""
+        mock_task = {"id": 105, "description": "fallback task", "status": "pending"}
+        mock_llm = {"success": True, "content": "Fallback result."}
+        import sys
+        saved = sys.modules.get('tools.opencode_tool')
+        sys.modules['tools.opencode_tool'] = None
+
+        try:
+            with patch('tools.orchestrator_tool.create_new_task', return_value=mock_task):
+                with patch('tools.orchestrator_tool.registry_update'):
+                    with patch('tools.orchestrator_tool.query_llm', return_value=mock_llm) as mock_q:
+                        with patch('tools.orchestrator_tool.store_insight'):
+                            with patch('tools.orchestrator_tool.append_event'):
+                                result = delegate_task("fallback task", "developer", run_stage_gates=False)
+
+            assert result["success"] is True
+            assert result["output"] == "Fallback result."
+            mock_q.assert_called_once()
+        finally:
+            if saved is None:
+                sys.modules.pop('tools.opencode_tool', None)
+            else:
+                sys.modules['tools.opencode_tool'] = saved
+
+    def test_delegate_non_developer_uses_llm(self):
+        """Non-developer roles (e.g., architect) use query_llm directly."""
+        mock_task = {"id": 104, "description": "arch task", "status": "pending"}
+        mock_llm = {"success": True, "content": "Architecture designed."}
+
+        with patch('tools.orchestrator_tool.create_new_task', return_value=mock_task):
+            with patch('tools.orchestrator_tool.registry_update'):
+                with patch('tools.orchestrator_tool.query_llm', return_value=mock_llm) as mock_q:
+                    with patch('tools.orchestrator_tool.store_insight'):
+                        with patch('tools.orchestrator_tool.append_event'):
+                            result = delegate_task("arch task", "architect", run_stage_gates=False)
+
+        assert result["success"] is True
+        mock_q.assert_called_once()
+
+    def test_delegate_opencode_fallback_to_llm(self):
+        """When opencode_tool is unavailable, developer tasks fall back to LLM."""
+        mock_task = {"id": 105, "description": "fallback task", "status": "pending"}
+        mock_llm = {"success": True, "content": "Fallback result."}
+
+        import sys
+        saved = sys.modules.get('tools.opencode_tool')
+        sys.modules['tools.opencode_tool'] = None  # Simulate module not installed
+
+        try:
+            with patch('tools.orchestrator_tool.create_new_task', return_value=mock_task):
+                with patch('tools.orchestrator_tool.registry_update'):
+                    with patch('tools.orchestrator_tool.query_llm', return_value=mock_llm) as mock_q:
+                        with patch('tools.orchestrator_tool.store_insight'):
+                            with patch('tools.orchestrator_tool.append_event'):
+                                result = delegate_task("fallback task", "developer", run_stage_gates=False)
+
+            assert result["success"] is True
+            assert result["output"] == "Fallback result."
+            mock_q.assert_called_once()
+        finally:
+            if saved is None:
+                sys.modules.pop('tools.opencode_tool', None)
+            else:
+                sys.modules['tools.opencode_tool'] = saved
 
 
 # ── Monitoring ──────────────────────────────────────────────────

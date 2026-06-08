@@ -2,7 +2,7 @@
   "id": 5,
   "uuid": "9eccbd15-c2c4-456f-9b39-2d5fcac730c3",
   "description": "Tool Created: registry_manager",
-  "agent": "hermes",
+  "agent": "system",
   "status": "done",
   "dependencies": [],
   "story_id": null,

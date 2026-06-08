@@ -2,7 +2,7 @@
   "id": 7,
   "uuid": "4071714a-d3c5-4f0f-9cef-bffad76c498c",
   "description": "Tool Created: llm_tool",
-  "agent": "hermes",
+  "agent": "system",
   "status": "done",
   "dependencies": [],
   "story_id": null,

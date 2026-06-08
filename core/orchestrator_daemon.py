@@ -4,6 +4,7 @@ import time
 import logging
 import signal
 import sys
+import yaml
 from pathlib import Path
 from typing import Dict, Any
 
@@ -40,11 +41,10 @@ class OrchestratorDaemon:
         role_descriptions = []
         available_roles = []
 
-        for role_file in sorted(roles_dir.glob("*.json")):
+        for role_file in sorted(roles_dir.glob("*.yaml")):
             try:
-                import json
                 with open(role_file, "r") as f:
-                    role = json.load(f)
+                    role = yaml.safe_load(f)
                 available_roles.append(role["name"])
                 role_descriptions.append(
                     f"- {role['name']}: {', '.join(role.get('capabilities', []))}"

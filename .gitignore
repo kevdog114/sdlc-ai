@@ -1,13 +1,32 @@
+# Python
 __pycache__/
 *.py[cod]
+*$py.class
 *.so
 *.egg-info/
 dist/
 build/
 .eggs/
 *.egg
+.venv/
+venv/
+ENV/
+
+# Project specific
 logs/
 runtime_logs/
 state/
+state.old/
+user_projects.old/
+sdlc_ai.egg-info/
+
+# Testing and artifacts
 test_file_exists.txt
 test_manual.txt
+
+# Env & Secrets
+.env
+.secrets/
+
+# OS files
+.DS_Store

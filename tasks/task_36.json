@@ -1,0 +1,21 @@
+{
+  "id": 36,
+  "uuid": "d3bdaed4-f00f-4ed5-9093-eca5f7aff315",
+  "description": "Define OpenAPI contract and data models for /initialize endpoint",
+  "agent": "architect",
+  "status": "rejected",
+  "dependencies": [],
+  "story_id": "STORY-1",
+  "interface_spec_id": "spec-b3026273",
+  "created_at": "2026-06-08T03:06:19.617391+00:00",
+  "updated_at": "2026-06-08T03:11:44.135389+00:00",
+  "verification_artifacts": [
+    {
+      "gate": "contract",
+      "result": "failed",
+      "reason": "NON_COMPLIANT - The implementation fails to satisfy the interface contract due to the following violations:\n1. **Missing Endpoints**: No routing or handler implementation is provided for `POST /initialize` or `GET /metadata/title`.\n2. **Missing Request/Response Schemas**: The mandatory `projectTitle` request field is absent, and the expected response fields (`repositoryId`, `readmePath`, `status` for 201; `title` for 200) are not defined or returned.\n3. **Incomplete OpenAPI Contract**: The submi",
+      "timestamp": "2026-06-08T03:11:44.135221+00:00"
+    }
+  ],
+  "completion_notes": "[REJECTED by contract] NON_COMPLIANT - The implementation fails to satisfy the interface contract due to the following violations:\n1. **Missing Endpoints**: No routing or handler implementation is provided for `POST /initialize` or `GET /metadata/title`.\n2. **Missing Request/Response Schemas**: The mandatory `projectTitle` request field is absent, and the expected response fields (`repositoryId`, `readmePath`, `status` for 201; `title` for 200) are not defined or returned.\n3. **Incomplete OpenAPI Contract**: The submi"
+}

@@ -11,22 +11,22 @@ try:
 except ImportError:
     litellm = None
 
-import yaml
 from bootstrap import append_event, add_task
 
-DEFAULT_ENDPOINT = "http://localhost:4096/v1/chat/completions"
-DEFAULT_TIMEOUT = 30
+DEFAULT_ENDPOINT = "http://localhost:1234/v1/chat/completions"
+DEFAULT_MODEL = "qwen/qwen3.6-27b"
+DEFAULT_TIMEOUT = 600
 
-# Hermes config path: env var override, then default location
-_hermes_config_path = Path(os.environ.get("SDLCAI_HERMES_CONFIG", str(Path.home() / ".hermes" / "config.yaml")))
-HERMES_CONFIG = Path(_hermes_config_path)
+# Local config path: env var override, then default location
+_config_path = Path(os.environ.get("SDLCAI_CONFIG", str(Path(__file__).resolve().parent.parent / "config.yaml")))
 
-def _get_hermes_config() -> Dict[str, Any]:
-    """Helper to load Hermes configuration."""
-    if not HERMES_CONFIG.exists():
+def _get_local_config() -> Dict[str, Any]:
+    """Helper to load local project configuration."""
+    if not _config_path.exists():
         return {}
     try:
-        with open(HERMES_CONFIG, 'r') as f:
+        import yaml
+        with open(_config_path, 'r') as f:
             return yaml.safe_load(f) or {}
     except Exception:
         return {}
@@ -35,7 +35,7 @@ def query_llm(
     prompt: str,
     system_prompt: Optional[str] = None,
     temperature: float = 0.7,
-    model: str = "local",
+    model: str = DEFAULT_MODEL,
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
     timeout: int = DEFAULT_TIMEOUT,
@@ -44,7 +44,7 @@ def query_llm(
 
     Supports LiteLLM for flexible model routing or standard requests for local endpoints/proxies.
 
-    If api_key/base_url are not provided, it attempts to pull from Hermes configuration.
+    If api_key/base_url are not provided, it attempts to pull from local configuration.
 
     Returns a dict with:
       - content: the assistant's text response (or error message)
@@ -52,18 +52,22 @@ def query_llm(
       - usage: optional token usage dict
       - error: present only on failure
     """
-    # 1. Resolve API Key, Base URL, and Model from Hermes config if not explicitly provided
-    config = _get_hermes_config()
-    if not api_key or not base_url or model == "local":
-        litellm_cfg = config.get('providers', {}).get('litellm', {})
-        if not api_key:
-            api_key = litellm_cfg.get('api_key')
-        if not base_url:
-            base_url = litellm_cfg.get('base_url')
-        
-        # If we have a proxy/litellm config, let's see if there is a default model to use instead of 'local'
-        if (api_key and base_url) and model == "local":
-            model = config.get('model', {}).get('default', 'local')
+    # 1. Resolve API Key, Base URL, Model, and Timeout from local config if not explicitly provided
+    config = _get_local_config()
+    llm_cfg = config.get('llm', {})
+
+    # Only use config defaults when the caller hasn't explicitly set a value
+    if not api_key:
+        api_key = llm_cfg.get('api_key')
+    if not base_url:
+        base_url = llm_cfg.get('base_url')
+    if model == "local":
+        model = llm_cfg.get('default_model', DEFAULT_MODEL)
+
+    # Timeout is configurable via env var or config, but respects explicit argument
+    timeout = int(os.environ.get("SDLCAI_LLM_TIMEOUT", timeout))
+    if timeout == DEFAULT_TIMEOUT and 'timeout' in llm_cfg:
+        timeout = int(llm_cfg['timeout'])
 
     messages = []
     if system_prompt:
@@ -163,7 +167,7 @@ if __name__ == "__main__":
     result = query_llm("Say hello in three words.")
     print(json.dumps(result, indent=2))
 
-    # Test 2: LM Studio Direct (Bypassing LiteLLM logic)
+    # Test 2: LM Studio Direct
     print("\nTesting LM Studio Direct (localhost:1234)...")
     lm_studio_res = query_llm(
         "Say hello in three words.",
@@ -171,11 +175,3 @@ if __name__ == "__main__":
         model="google/gemma-4-26b-a4b" # Exact model name
     )
     print(json.dumps(lm_studio_res, indent=2))
-
-    # Test 3: Hermes Config (Should hit the 500 error again if still pointing to port 4000)
-    print("\nTesting Hermes-LiteLLM config...")
-    config = _get_hermes_config()
-    l_cfg = config.get('providers', {}).get('litellm', {})
-    if l_cfg.get('api_key') and l_cfg.get('base_url'):
-        res = query_llm("Say hello in three words.")
-        print(json.dumps(res, indent=2))

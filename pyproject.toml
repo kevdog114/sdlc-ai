@@ -23,6 +23,9 @@ dev = [
     "pytest>=7.0",
     "pytest-mock>=3.10.0",
 ]
+telegram = [
+    "python-telegram-bot>=20.0",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -8,13 +8,20 @@ from typing import Any, Dict, List, Set, Optional
 import asyncio
 import uuid
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
 import bootstrap
+bootstrap.ensure_initialized()
+
+from tools import stage_gate_tool
+from tools import clarification_tool
+from tools import project_tool
+from tools import telegram_bot
 
 # --- Path Discovery --------------------------------------------
 
@@ -47,6 +54,14 @@ print(f"DEBUG: Detected Project Root: {PROJECT_ROOT}")
 print(f"DEBUG: Using TASK_REGISTRY_PATH: {bootstrap.TASK_REGISTRY_PATH}")
 
 app = FastAPI(title="Command Center Pulse")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # State management
 connected_clients: List[WebSocket] = []
@@ -114,6 +129,12 @@ class _FileChangeHandler(FileSystemEventHandler):
             self._handle_registry_change()
         elif src == bootstrap.EVENT_LOG_PATH.resolve():
             self._handle_event_change()
+        elif src == bootstrap.STATE_FILE_PATH.resolve():
+            self._handle_state_change()
+        elif hasattr(bootstrap, 'STORY_REGISTRY_PATH') and src == bootstrap.STORY_REGISTRY_PATH.resolve():
+            self._handle_story_change()
+        elif src == (PROJECT_ROOT / "state" / "clarifications.json").resolve():
+            self._handle_clarification_change()
 
     def _handle_registry_change(self):
         global _cached_registry, registry_position
@@ -156,6 +177,60 @@ class _FileChangeHandler(FileSystemEventHandler):
                     }
                     _broadcast(payload)
                     event_position = len(new_lines)
+
+    def _handle_state_change(self):
+        time.sleep(0.1)
+        with lock:
+            try:
+                new_state = bootstrap.load_project_state()
+                _broadcast({
+                    "type": "state_update",
+                    "kanban": new_state.get("kanban", {}),
+                    "stories_kanban": new_state.get("stories_kanban", {}),
+                    "active_agents": new_state.get("active_agents", {}),
+                })
+            except Exception:
+                pass
+
+    def _handle_story_change(self):
+        time.sleep(0.1)
+        with lock:
+            try:
+                import sys as _sys
+                sys_path = str(PROJECT_ROOT)
+                tools_path = str(PROJECT_ROOT / "tools")
+                if sys_path not in _sys.path:
+                    _sys.path.insert(0, sys_path)
+                if tools_path not in _sys.path:
+                    _sys.path.insert(0, tools_path)
+                from story_tool import list_stories, sync_all_stories
+                sync_all_stories()
+                stories = list_stories()
+                _broadcast({
+                    "type": "story_update",
+                    "stories": stories,
+                })
+            except Exception:
+                pass
+
+    def _handle_clarification_change(self):
+        time.sleep(0.1)
+        with lock:
+            try:
+                import sys as _sys
+                tools_path = str(PROJECT_ROOT / "tools")
+                if tools_path not in _sys.path:
+                    _sys.path.insert(0, tools_path)
+                from clarification_tool import list_requests
+                pending = list_requests(status="pending")
+                answered = list_requests(status="answered")
+                _broadcast({
+                    "type": "clarification_update",
+                    "pending": pending,
+                    "answered": answered,
+                })
+            except Exception:
+                pass
 
 print("DEBUG: Setting up observer...")
 observer = Observer()
@@ -207,6 +282,126 @@ async def receive_telemetry(request: Request):
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+@app.get("/api/kanban")
+async def get_kanban():
+    """Returns the kanban board state with task details per column."""
+    try:
+        sys_path = str(PROJECT_ROOT)
+        import sys as _sys
+        if sys_path not in _sys.path:
+            _sys.path.insert(0, sys_path)
+        if str(PROJECT_ROOT / "tools") not in _sys.path:
+            _sys.path.insert(0, str(PROJECT_ROOT / "tools"))
+        from kanban_tool import get_board_state, sync_all_tasks
+        sync_all_tasks()
+        return get_board_state()
+    except ImportError:
+        state = bootstrap.load_project_state()
+        return state.get("kanban", {})
+
+@app.get("/api/stories")
+async def get_stories():
+    """Returns all stories with derived status and progress."""
+    try:
+        sys_path = str(PROJECT_ROOT)
+        import sys as _sys
+        if sys_path not in _sys.path:
+            _sys.path.insert(0, sys_path)
+        if str(PROJECT_ROOT / "tools") not in _sys.path:
+            _sys.path.insert(0, str(PROJECT_ROOT / "tools"))
+        from story_tool import list_stories, sync_all_stories
+        sync_all_stories()
+        return list_stories()
+    except ImportError:
+        return []
+
+@app.get("/api/story-kanban")
+async def get_story_kanban():
+    """Returns the story kanban board state."""
+    try:
+        sys_path = str(PROJECT_ROOT)
+        import sys as _sys
+        if sys_path not in _sys.path:
+            _sys.path.insert(0, sys_path)
+        if str(PROJECT_ROOT / "tools") not in _sys.path:
+            _sys.path.insert(0, str(PROJECT_ROOT / "tools"))
+        from story_tool import get_story_board_state
+        return get_story_board_state()
+    except ImportError:
+        state = bootstrap.load_project_state()
+        return state.get("stories_kanban", {})
+
+@app.post("/api/stage-gate/submit")
+async def stage_gate_submit(request: Request):
+    """Submit a task for verification (developer done → QA)."""
+    try:
+        body = await request.json()
+        task_id = body.get("task_id")
+        notes = body.get("notes", "")
+        if not task_id:
+            return {"success": False, "error": "Missing task_id"}
+        result = stage_gate_tool.submit_for_verification(task_id, notes)
+        _broadcast({"type": "stage_gate_update", "data": result})
+        return result
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.post("/api/stage-gate/qa")
+async def stage_gate_qa(request: Request):
+    """Run the QA verification gate."""
+    try:
+        body = await request.json()
+        task_id = body.get("task_id")
+        if not task_id:
+            return {"success": False, "error": "Missing task_id"}
+        result = stage_gate_tool.run_qa_gate(task_id)
+        _broadcast({"type": "stage_gate_update", "data": result})
+        return result
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.post("/api/stage-gate/architect")
+async def stage_gate_architect(request: Request):
+    """Run the architectural review gate."""
+    try:
+        body = await request.json()
+        task_id = body.get("task_id")
+        if not task_id:
+            return {"success": False, "error": "Missing task_id"}
+        result = stage_gate_tool.run_architect_gate(task_id)
+        _broadcast({"type": "stage_gate_update", "data": result})
+        return result
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.post("/api/stage-gate/full")
+async def stage_gate_full(request: Request):
+    """Run the complete stage-gate pipeline for a task."""
+    try:
+        body = await request.json()
+        task_id = body.get("task_id")
+        notes = body.get("notes", "")
+        if not task_id:
+            return {"success": False, "error": "Missing task_id"}
+        result = stage_gate_tool.run_full_pipeline(task_id, notes)
+        _broadcast({"type": "stage_gate_update", "data": result})
+        return result
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/stage-gate/status/{task_id}")
+async def stage_gate_status(task_id: int):
+    """Get the current pipeline status for a task."""
+    try:
+        return stage_gate_tool.get_pipeline_status(task_id)
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/state")
+async def get_state():
+    """Returns the full project state."""
+    return bootstrap.load_project_state()
+
 @app.get("/api/agents")
 async def get_active_agents():
     """Returns currently tracked agents (merged from telemetry and project state)."""
@@ -248,6 +443,187 @@ async def get_active_agents():
                 }
 
         return list(merged_agents.values())
+
+# ── Clarification Routes ────────────────────────────────────────
+
+@app.get("/api/clarifications")
+async def get_clarifications(project_id: str = None, status: str = None):
+    """List clarification requests with optional filters."""
+    try:
+        import sys as _sys
+        tools_path = str(PROJECT_ROOT / "tools")
+        if tools_path not in _sys.path:
+            _sys.path.insert(0, tools_path)
+        from clarification_tool import list_requests
+        return list_requests(project_id=project_id, status=status)
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/api/clarifications/answer")
+async def answer_clarification(request: Request, background_tasks: BackgroundTasks):
+    """Submit an answer to a clarification request."""
+    try:
+        body = await request.json()
+        request_id = body.get("request_id")
+        answer = body.get("answer")
+        if not request_id or not answer:
+            return {"success": False, "error": "Missing request_id or answer"}
+        from clarification_tool import answer_request
+        result = answer_request(request_id, answer, answered_by="dashboard")
+        if result:
+            _broadcast({"type": "clarification_answered", "request_id": request_id, "answer": answer[:200]})
+            # Schedule resume in background to avoid blocking the HTTP response
+            def _try_resume():
+                try:
+                    from project_tool import resume_project as rp, _load_project
+                    proj = _load_project(result.get("project_id", ""))
+                    if proj and proj.get("status") == "awaiting_clarification":
+                        resume_result = rp(result["project_id"])
+                        if resume_result.get("status") == "completed":
+                            _broadcast({"type": "project_update", "data": resume_result})
+                except Exception:
+                    pass
+            background_tasks.add_task(_try_resume)
+            return {"success": True, "request": result, "message": "Answer recorded. Processing resumed in background."}
+        return {"success": False, "error": "Request not found"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+# ── Project Routes ──────────────────────────────────────────────
+
+@app.options("/api/projects/submit")
+async def options_submit():
+    return {"status": "ok"}
+
+@app.post("/api/projects/submit")
+async def submit_project(request: Request, background_tasks: BackgroundTasks):
+    """Submit a high-level project for the full SDLC pipeline."""
+    client_ip = request.client.host if request.client else "unknown"
+    print(f"\n[DEBUG] /api/projects/submit hit by {client_ip}")
+    try:
+        body = await request.json()
+        print(f"[DEBUG] Body: {body}")
+        description = body.get("description", "")
+        name = body.get("name", "Untitled Project")
+        if not description:
+            return {"success": False, "error": "Missing project description"}
+        
+        from project_tool import create_project_record, submit_project as sp
+        
+        # 1. Create the record immediately so we have an ID to return
+        project = create_project_record(description, name)
+        project_id = project["id"]
+        print(f"[DEBUG] Created project {project_id}")
+        
+        # 2. Schedule the heavy lifting in the background
+        background_tasks.add_task(sp, description, project_id=project_id)
+        
+        # 3. Return immediate response
+        result = {
+            "success": True,
+            "project_id": project_id,
+            "status": project["status"],
+            "message": "Project submitted and analysis started in the background."
+        }
+        
+        # Broadcast that a new project is being tracked
+        _broadcast({"type": "project_update", "data": result})
+        return result
+    except Exception as e:
+        print(f"[DEBUG] Error in submit_project: {str(e)}")
+        return {"success": False, "error": str(e)}
+
+
+
+@app.post("/api/projects/resume")
+async def resume_project(request: Request, background_tasks: BackgroundTasks):
+    """Resume a project that was paused for clarifications."""
+    try:
+        body = await request.json()
+        project_id = body.get("project_id")
+        if not project_id:
+            return {"success": False, "error": "Missing project_id"}
+
+        def _do_resume():
+            try:
+                from project_tool import resume_project as rp
+                result = rp(project_id)
+                _broadcast({"type": "project_update", "data": result})
+            except Exception as e:
+                _broadcast({"type": "project_update", "data": {"error": str(e)}})
+
+        background_tasks.add_task(_do_resume)
+        _broadcast({"type": "project_update", "data": {"project_id": project_id, "status": "resuming"}})
+        return {"success": True, "project_id": project_id, "message": "Project resume started in background."}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/projects")
+async def list_projects():
+    """List all projects."""
+    try:
+        import sys as _sys
+        tools_path = str(PROJECT_ROOT / "tools")
+        if tools_path not in _sys.path:
+            _sys.path.insert(0, tools_path)
+        from project_tool import list_projects as lp
+        return lp()
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/projects/{project_id}")
+async def get_project(project_id: str):
+    """Get project status."""
+    try:
+        import sys as _sys
+        tools_path = str(PROJECT_ROOT / "tools")
+        if tools_path not in _sys.path:
+            _sys.path.insert(0, tools_path)
+        from project_tool import get_project_status
+        result = get_project_status(project_id)
+        if result:
+            return result
+        return {"error": "Project not found"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/api/projects/{project_id}/command")
+async def project_command(project_id: str, request: Request, background_tasks: BackgroundTasks):
+    """Send a command/prompt to an existing project for BA analysis."""
+    try:
+        body = await request.json()
+        command = body.get("command", "")
+        if not command:
+            return {"success": False, "error": "Missing command"}
+
+        project = project_tool._load_project(project_id)
+        if not project:
+            return {"success": False, "error": f"Project {project_id} not found"}
+
+        project["status"] = project_tool.PROJECT_STATUS_ACTIVE
+        project["phase"] = project_tool.PHASE_BA_ANALYSIS
+        project_tool._save_project(project)
+
+        def run_ba():
+            try:
+                result = project_tool.submit_project(command, project_id=project_id)
+                _broadcast({"type": "project_update", "data": {"project_id": project_id, "status": result.get("status", "processing")}})
+                _broadcast({"type": "registry_update", "data": {}})
+            except Exception as e:
+                _broadcast({"type": "project_update", "data": {"project_id": project_id, "error": str(e)}})
+
+        background_tasks.add_task(run_ba)
+
+        _broadcast({"type": "project_update", "data": {"project_id": project_id, "status": "ba_analysis_started", "command": command}})
+        return {"success": True, "project_id": project_id, "status": "ba_analysis_started", "message": "Command sent for BA analysis."}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
 
 # --- Core Routes ---
 
@@ -302,8 +678,28 @@ async def websocket_endpoint(websocket: WebSocket):
 
 print("DEBUG: App mounted.")
 
-def start_pulse_server(host: str = "127.0.0.1", port: int = 8080) -> str:
+def start_pulse_server(host: str = "0.0.0.0", port: int = 8080) -> str:
     import uvicorn
+
+    # Start Telegram bot poller (if configured)
+    def _on_telegram_answer(request_id: str):
+        """Callback when a clarification is answered via Telegram."""
+        _broadcast({"type": "clarification_answered", "request_id": request_id})
+        try:
+            from project_tool import resume_project, _load_project
+            from clarification_tool import get_request
+            req = get_request(request_id)
+            if req and req.get("project_id"):
+                proj = _load_project(req["project_id"])
+                if proj and proj.get("status") == "awaiting_clarification":
+                    resume_result = resume_project(req["project_id"])
+                    if resume_result.get("status") == "completed":
+                        _broadcast({"type": "project_update", "data": resume_result})
+        except Exception:
+            pass
+
+    telegram_bot.start_poller(on_answer=_on_telegram_answer)
+
     config = uvicorn.Config(app, host=host, port=port, log_level="warning", reload=False)
     server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, daemon=True)
@@ -323,7 +719,7 @@ print("DEBUG: pulse_server module loading complete.")
 if __name__ == "__main__":
     import uvicorn
     import sys
-    host = "127.0.0.1"
+    host = "0.0.0.0"
     port = 8080
     if len(sys.argv) > 1:
         port = int(sys.argv[1])
