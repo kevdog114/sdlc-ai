@@ -2,6 +2,7 @@
 
 import json
 import os
+import time
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -12,10 +13,12 @@ except ImportError:
     litellm = None
 
 from bootstrap import append_event, add_task
+from tools.llm_logger import log_llm_call
 
 DEFAULT_ENDPOINT = "http://localhost:1234/v1/chat/completions"
 DEFAULT_MODEL = "qwen/qwen3.6-27b"
 DEFAULT_TIMEOUT = 600
+DEFAULT_MAX_TOKENS = 16000
 
 # Local config path: env var override, then default location
 _config_path = Path(os.environ.get("SDLCAI_CONFIG", str(Path(__file__).resolve().parent.parent / "config.yaml")))
@@ -39,6 +42,7 @@ def query_llm(
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
     timeout: int = DEFAULT_TIMEOUT,
+    max_tokens: int = DEFAULT_MAX_TOKENS,
 ) -> dict:
     """Send a prompt to an LLM endpoint and return the response.
 
@@ -74,16 +78,27 @@ def query_llm(
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": prompt})
 
+    # Build safe request payload for logging (redacts API key)
+    log_request = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "timeout": timeout,
+    }
+
     # 2. Use LiteLLM SDK if available and requested (and NOT hitting a direct local endpoint like LM Studio)
     # We check if the user is explicitly trying to use 'litellm' or if they provided a base_url that isn't localhost:1234
     is_lm_studio = base_url and "localhost:1234" in base_url
 
     if litellm and model != "local" and not is_lm_studio and api_key and base_url:
+        start = time.monotonic()
         try:
             response = litellm.completion(
                 model=model,
                 messages=messages,
                 temperature=temperature,
+                max_tokens=max_tokens,
                 api_key=api_key,
                 base_url=base_url,
                 timeout=timeout,
@@ -92,6 +107,10 @@ def query_llm(
             content = response.choices[0].message.content
             usage = getattr(response, 'usage', None)
             usage_dict = usage.__dict__ if hasattr(usage, '__dict__') else (dict(usage) if usage else None)
+            duration_ms = (time.monotonic() - start) * 1000
+
+            log_response = {"content": content, "success": True, "usage": usage_dict}
+            log_llm_call(log_request, log_response, duration_ms, model, base_url)
 
             append_event(
                 "tool:llm_reasoning",
@@ -112,6 +131,10 @@ def query_llm(
 
         except Exception as e:
             error_msg = str(e)
+            duration_ms = (time.monotonic() - start) * 1000
+            log_response = {"success": False, "error": error_msg}
+            log_llm_call(log_request, log_response, duration_ms, model, base_url)
+
             if "Provider NOT provided" in error_msg or "BadRequestError" in error_msg:
                 pass # Fall through to direct HTTP request fallback
             else:
@@ -120,7 +143,7 @@ def query_llm(
 
     # 3. Direct HTTP request fallback (Most robust for local endpoints like LM Studio)
     endpoint = base_url if base_url else DEFAULT_ENDPOINT
-    
+
     if not endpoint.endswith("/chat/completions") and not endpoint.endswith("/"):
          endpoint = f"{endpoint.rstrip('/')}/chat/completions"
 
@@ -128,19 +151,25 @@ def query_llm(
         "model": model, # Passes the exact string provided (e.g., google/gemma...)
         "messages": messages,
         "temperature": temperature,
+        "max_tokens": max_tokens,
     }
-    
+
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
+    start = time.monotonic()
     try:
         resp = requests.post(endpoint, headers=headers, data=json.dumps(payload), timeout=timeout)
         resp.raise_for_status()
         data = resp.json()
+        duration_ms = (time.monotonic() - start) * 1000
 
         content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
         usage = data.get("usage")
+
+        log_response = {"content": content, "success": True, "usage": usage}
+        log_llm_call(log_request, log_response, duration_ms, model, endpoint)
 
         append_event(
             "tool:llm_reasoning",
@@ -156,7 +185,11 @@ def query_llm(
         return {"content": content, "success": True, "usage": usage}
 
     except Exception as e:
+        duration_ms = (time.monotonic() - start) * 1000
         error_msg = f"HTTP error (endpoint={endpoint}): {str(e)}"
+        log_response = {"success": False, "error": error_msg}
+        log_llm_call(log_request, log_response, duration_ms, model, endpoint)
+
         append_event("tool:llm_reasoning", {"action": "query", "success": False, "error": error_msg})
         return {"content": "", "success": False, "error": error_msg}
 

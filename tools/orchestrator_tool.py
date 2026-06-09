@@ -23,6 +23,13 @@ from bootstrap import (
 from tools.knowledge_tool import store_insight
 from tools.llm_tool import query_llm
 from tools.registry_tool import create_new_task, get_task_by_id, update_task_status as registry_update
+from tools.story_tool import (
+    create_story,
+    get_story_execution_order,
+    get_ready_stories,
+    derive_story_status,
+    get_story,
+)
 
 ROLES_DIR = BASE_DIR / "roles"
 
@@ -71,10 +78,6 @@ def load_role(role_name: str) -> Optional[Dict[str, Any]]:
         return yaml.safe_load(role_path.read_text(encoding="utf-8"))
     except (yaml.YAMLError, OSError):
         return None
-    try:
-        return json.loads(role_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return None
 
 
 # ── Goal Decomposition ──────────────────────────────────────────
@@ -84,19 +87,17 @@ DECOMPOSITION_PROMPT = (
     "You are an Architect. Decompose the following goal into a sequence of "
     "atomic, independently executable subtasks. Each subtask should be small "
     "enough to be completed by a single specialist agent in one pass.\n\n"
+    "CRITICAL: Return ONLY a JSON array of objects. Do NOT provide any "
+    "architecture descriptions, introductory text, or explanations. "
+    "The output must be parsable as a JSON list.\n\n"
     "Available roles: {roles}\n"
     "For each role, the capabilities are: {capabilities}\n\n"
     "Goal: {goal}\n\n"
-    "Return your answer as a JSON array of objects. Each object must have:\n"
-    "  - 'task': a clear, actionable description of the subtask\n"
-    "  - 'role': one of the available role names\n"
-    "  - 'dependencies': array of indices (0-based) of tasks that must complete first\n\n"
-    "Example:\n"
+    "Example Output Format:\n"
     "[\n"
-    "  {{\"task\": \"Create the module skeleton\", \"role\": \"developer\", \"dependencies\": []}},\n"
+    "  {{\"task\": \"Create module skeleton\", \"role\": \"developer\", \"dependencies\": []}},\n"
     "  {{\"task\": \"Write unit tests\", \"role\": \"qa\", \"dependencies\": [0]}}\n"
-    "]\n\n"
-    "Return ONLY the JSON array, nothing else."
+    "]\n"
 )
 
 
@@ -142,11 +143,26 @@ def decompose_goal(goal: str) -> List[Dict[str, Any]]:
     tasks: List[Dict[str, Any]] = []
     if result["success"] and result.get("content"):
         try:
-            tasks = json.loads(result["content"].strip())
-            if not isinstance(tasks, list) or not all(
-                isinstance(t, dict) and "task" in t and "role" in t for t in tasks
-            ):
-                tasks = []
+            parsed = json.loads(result["content"].strip())
+            if isinstance(parsed, list):
+                # Verify it's a valid task list
+                if all(isinstance(t, dict) and "task" in t and "role" in t for t in parsed):
+                    tasks = parsed
+            elif isinstance(parsed, dict) and "architecture" in parsed:
+                # RECOVERY: The LLM provided architecture instead of tasks.
+                # Attempt to turn that architecture into a task list via a recovery call.
+                recovery_prompt = (
+                    "You are an Architect. You just designed a system architecture. "
+                    "Now, decompose that architecture into a JSON array of atomic subtasks. "
+                    "Each object must have 'task', 'role', and 'dependencies'.\n\n"
+                    f"Architecture to decompose:\n{parsed['architecture']}\n\n"
+                    "Return ONLY the JSON array."
+                )
+                recovery_result = query_llm(recovery_prompt, temperature=0.1)
+                if recovery_result["success"]:
+                    recovered_tasks = json.loads(recovery_result["content"].strip())
+                    if isinstance(recovered_tasks, list):
+                        tasks = recovered_tasks
         except (json.JSONDecodeError, TypeError):
             pass
 
@@ -181,6 +197,7 @@ def delegate_task(
     run_stage_gates: bool = True,
     story_id: Optional[str] = None,
     interface_spec_id: Optional[str] = None,
+    existing_task_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Create a registry task and execute it with the given agent persona.
 
@@ -195,6 +212,8 @@ def delegate_task(
     If interface_spec_id is provided, injects the interface contract into
     the task context.
 
+    If existing_task_id is provided, reuses that task instead of creating a new one.
+
     Returns:
         Dict with keys: task_id, success, output, error, stage_gates
     """
@@ -207,22 +226,24 @@ def delegate_task(
         )
         return {"task_id": None, "success": False, "output": "", "error": error, "stage_gates": []}
 
-    task = create_new_task(
-        description=task_description,
-        agent=role_name,
-        story_id=story_id,
-        interface_spec_id=interface_spec_id,
-    )
+    if existing_task_id is not None:
+        task_id = existing_task_id
+    else:
+        task = create_new_task(
+            description=task_description,
+            agent=role_name,
+            story_id=story_id,
+            interface_spec_id=interface_spec_id,
+        )
+        task_id = task.get("id")
 
-    task_id = task.get("id")
-
-    # Link to story if provided
-    if story_id and task_id:
-        try:
-            from tools.story_tool import add_task_to_story
-            add_task_to_story(story_id, task_id)
-        except ImportError:
-            pass
+        # Link to story if provided
+        if story_id and task_id:
+            try:
+                from tools.story_tool import add_task_to_story
+                add_task_to_story(story_id, task_id)
+            except ImportError:
+                pass
 
     registry_update(task_id, TASK_STATUS_IN_PROGRESS)
 
@@ -520,7 +541,7 @@ def handle_failure(
     if retry_count < max_retries:
         task["retry_count"] = retry_count + 1
         registry_update(task_id, TASK_STATUS_PENDING, notes=f"Retry {retry_count + 1}/{max_retries}")
-        result = delegate_task(description, original_role)
+        result = delegate_task(description, original_role, existing_task_id=task_id)
         action = "retry"
 
         append_event(
@@ -545,7 +566,7 @@ def handle_failure(
     if alternative_roles:
         new_role = alternative_roles[0]
         registry_update(task_id, TASK_STATUS_PENDING, notes=f"Re-assign to {new_role}")
-        result = delegate_task(description, new_role)
+        result = delegate_task(description, new_role, existing_task_id=task_id)
         action = "re-assign"
 
         append_event(
@@ -708,4 +729,134 @@ def run_orchestration(
         "summary": summary,
         "story_id": story_id,
         "story_completion": story_completion,
+    }
+
+
+# ── Multi-Story Orchestration ───────────────────────────────────
+
+
+def run_story_orchestration(
+    goals: List[Dict[str, Any]],
+    max_retries: int = MAX_RETRIES,
+) -> Dict[str, Any]:
+    """Execute multiple stories in dependency order.
+
+    Each entry in goals is a dict with:
+      - 'goal': the high-level goal string
+      - 'title': story title
+      - 'description': story description (optional)
+      - 'acceptance_criteria': list of criteria (optional)
+      - 'priority': high/medium/low (optional)
+      - 'dependencies': list of indices into goals[] that must complete first
+
+    Stories are created with dependency tracking, then executed in
+    topological order. A story only runs once all its dependencies
+    have reached 'done' status.
+
+    Returns:
+        Dict with keys: stories, results, summary
+    """
+    append_event(
+        "tool:orchestrator",
+        {"action": "story_orchestration_start", "goal_count": len(goals)},
+    )
+
+    story_id_map: Dict[int, str] = {}
+    dep_map: Dict[int, List[str]] = {}
+
+    for idx, g in enumerate(goals):
+        deps = g.get("dependencies", [])
+        dep_map[idx] = [story_id_map[d] for d in deps if d in story_id_map]
+
+        story = create_story(
+            title=g["title"],
+            description=g.get("description", ""),
+            acceptance_criteria=g.get("acceptance_criteria"),
+            priority=g.get("priority", "medium"),
+            dependencies=dep_map[idx],
+        )
+        story_id_map[idx] = story["id"]
+
+    execution_order = get_story_execution_order()
+    results: List[Dict[str, Any]] = []
+    story_results: Dict[str, Dict[str, Any]] = {}
+
+    for story_id in execution_order:
+        idx = list(story_id_map.values()).index(story_id) if story_id in story_id_map.values() else -1
+        if idx < 0:
+            continue
+
+        goal_entry = goals[idx]
+        story = get_story(story_id)
+        if not story:
+            continue
+
+        deps = story.get("dependencies", [])
+        blocked = False
+        for dep_id in deps:
+            dep_status = derive_story_status(dep_id)
+            if dep_status == "failed":
+                append_event(
+                    "tool:orchestrator",
+                    {"action": "story_blocked", "story_id": story_id, "blocked_by": dep_id,
+                     "reason": "dependency failed"},
+                )
+                results.append({
+                    "story_id": story_id,
+                    "goal": goal_entry["goal"],
+                    "success": False,
+                    "error": f"Blocked: dependency {dep_id} failed",
+                    "status": "blocked",
+                })
+                blocked = True
+                break
+            if dep_status not in ("done",):
+                append_event(
+                    "tool:orchestrator",
+                    {"action": "story_blocked", "story_id": story_id, "blocked_by": dep_id,
+                     "reason": f"dependency status: {dep_status}"},
+                )
+                results.append({
+                    "story_id": story_id,
+                    "goal": goal_entry["goal"],
+                    "success": False,
+                    "error": f"Blocked: dependency {dep_id} not done ({dep_status})",
+                    "status": "blocked",
+                })
+                blocked = True
+                break
+
+        if blocked:
+            continue
+
+        result = run_orchestration(
+            goal_entry["goal"],
+            max_retries=max_retries,
+            story_id=story_id,
+        )
+        story_results[story_id] = result
+        results.append({
+            "story_id": story_id,
+            "goal": goal_entry["goal"],
+            "success": result["summary"]["failed"] == 0,
+            "summary": result["summary"],
+            "status": derive_story_status(story_id),
+        })
+
+    summary = {
+        "total": len(results),
+        "succeeded": sum(1 for r in results if r["success"]),
+        "failed": sum(1 for r in results if not r["success"]),
+        "blocked": sum(1 for r in results if r.get("status") == "blocked"),
+    }
+
+    append_event(
+        "tool:orchestrator",
+        {"action": "story_orchestration_complete", "summary": summary},
+    )
+
+    return {
+        "stories": [story_id_map[i] for i in range(len(goals))],
+        "results": results,
+        "summary": summary,
     }

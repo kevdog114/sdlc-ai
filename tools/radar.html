@@ -91,10 +91,10 @@
                   {{ project.status }}
                 </span></div><p class="text-sm text-radar-muted line-clamp-3">{{ project.description }}</p>
 </div><div class="flex justify-between items-center mt-4 pt-4 border-t border-radar-border/50">
-              <span class="text-[10px] text-radar-dim uppercase tracking-widest">Phase: {{ project.phase }}</span>              <span v-if="project.clarifications?.pending > 0" class="text-xs text-radar-warning flex items-center gap-1">
+              <span class="text-[10px] text-radar-dim uppercase tracking-widest">Phase: {{ project.phase }}</span>              <span v-if="project.clarifications && project.clarifications.pending > 0" class="text-xs text-radar-warning flex items-center gap-1">
                 <span class="w-1.5 h-1.5 rounded-full bg-radar-warning animate-pulse"></span>{{ project.clarifications.pending }} Clarifications
               </span><!-- Pipeline Status Indicator -->
-              <div v-if="pipelineStatuses[project.id]" class="text-[10px] text-radar-accent flex items-center gap-1 truncate max-w-[180px]">
+              <div v-if="pipelineStatuses && pipelineStatuses[project.id]" class="text-[10px] text-radar-accent flex items-center gap-1 truncate max-w-[180px]">
                 <span class="w-1.5 h-1.5 rounded-full bg-radar-accent animate-pulse"></span><span class="truncate">{{ pipelineStatuses[project.id].message }}</span>
               </div></div></div><!-- Empty State -->
           <div v-if="projects.length === 0" class="col-span-full py-20 text-center border border-dashed border-radar-border rounded-lg">
@@ -175,7 +175,7 @@
                   <div v-for="col in storyColumns" :key="col.key" class="flex-1 min-w-[280px] bg-radar-bg/30 rounded-lg border border-radar-border flex flex-col">
                     <div class="px-4 py-3 border-b border-radar-border flex items-center justify-between">
                       <span class="text-xs font-bold uppercase tracking-wider" :class="col.color">{{ col.label }}</span><span class="text-[10px] bg-radar-panel px-2 py-0.5 rounded text-radar-dim">{{ storyColumnItems(col.key).length }}</span></div><div class="flex-1 overflow-y-auto p-3 space-y-3">
-                      <div v-for="story in storyColumnItems(col.key)" :key="story.id" class="bg-radar-panel border border-radar-border p-3 rounded-lg fade-in shadow-sm">
+                       <div v-for="story in storyColumnItems(col.key)" :key="story.id" @click="openStoryDetail(story)" class="bg-radar-panel border border-radar-border p-3 rounded-lg fade-in shadow-sm cursor-pointer hover:border-radar-accent/50 transition-colors">
                         <div class="flex items-center justify-between mb-2">
                           <span class="text-[10px] font-bold text-radar-accent">{{ story.id }}</span><span :class="priorityBadge(story.priority)" class="text-[9px] px-1.5 py-0.5 rounded uppercase font-bold">{{ story.priority }}</span></div><div class="text-xs text-radar-text mb-3 line-clamp-2">{{ story.title }}</div><div class="space-y-1">
                            <div class="flex items-center justify-between text-[9px] text-radar-dim">
@@ -219,7 +219,74 @@
                <div class="px-4 py-2.5 border-b border-radar-border bg-radar-panel/50 flex items-center justify-between">
                  <h3 class="text-[10px] font-bold uppercase tracking-widest text-radar-dim">Thought Stream</h3><span class="text-[9px] text-radar-dim">{{events?.length}} logs</span></div><div ref="streamContainer" class="flex-1 overflow-y-auto p-3 terminal-text text-[10px] space-y-1">
                  <div v-if="events.length === 0" class="text-center py-8 text-radar-dim italic">Waiting for events...</div><div v-for="(event, idx) in displayedEvents" :key="idx" class="fade-in py-1 border-b border-radar-border/30 last:border-0 truncate">
-                   <span class="text-radar-dim mr-1">[{{ eventTime(event.timestamp) }}]</span><span :class="eventTypeColor(event.type || '')" class="font-bold mr-1">{{ (event.type || '').split(':').pop() }}</span><span class="text-radar-muted">{{ eventSummary(event) }}</span></div></div></div></aside></div></div></main></div><script>
+                   <span class="text-radar-dim mr-1">[{{ eventTime(event.timestamp) }}]</span><span :class="eventTypeColor(event.type || '')" class="font-bold mr-1">{{ (event.type || '').split(':').pop() }}</span><span class="text-radar-muted">{{ eventSummary(event) }}</span>            </div></div></div></aside></div>
+         <!-- Story Detail Modal -->
+         <div v-if="selectedStory" @click.self="closeStoryDetail" @keydown.escape="closeStoryDetail" class="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm fade-in">
+           <div class="bg-radar-panel border border-radar-border rounded-xl shadow-2xl w-full max-w-2xl mx-4 max-h-[85vh] flex flex-col">
+             <!-- Modal Header -->
+             <div class="flex items-center justify-between px-6 py-4 border-b border-radar-border">
+               <div class="flex items-center gap-3">
+                 <span class="text-sm font-bold text-radar-accent">{{ selectedStory.id }}</span>
+                 <span :class="priorityBadge(selectedStory.priority)" class="text-[10px] px-2 py-0.5 rounded uppercase font-bold">{{ selectedStory.priority }}</span>
+                 <span :class="storyStatusBadge(selectedStory.derived_status)" class="text-[10px] px-2 py-0.5 rounded uppercase font-bold">{{ selectedStory.derived_status || 'backlog' }}</span>
+               </div>
+               <button @click="closeStoryDetail" class="text-radar-dim hover:text-radar-text transition-colors text-lg leading-none">&times;</button>
+             </div>
+             <!-- Modal Body -->
+             <div class="flex-1 overflow-y-auto px-6 py-5 space-y-5">
+               <!-- Title -->
+               <h3 class="text-lg font-bold text-radar-text">{{ selectedStory.title }}</h3>
+               <!-- Description -->
+               <div v-if="selectedStory.description">
+                 <h4 class="text-[10px] font-bold uppercase tracking-widest text-radar-dim mb-2">Description</h4>
+                 <p class="text-sm text-radar-muted leading-relaxed">{{ selectedStory.description }}</p>
+               </div>
+               <!-- Acceptance Criteria -->
+               <div v-if="selectedStory.acceptance_criteria && selectedStory.acceptance_criteria.length > 0">
+                 <h4 class="text-[10px] font-bold uppercase tracking-widest text-radar-dim mb-2">Acceptance Criteria</h4>
+                 <ul class="space-y-1.5">
+                   <li v-for="(ac, idx) in selectedStory.acceptance_criteria" :key="idx" class="flex items-start gap-2 text-sm text-radar-muted">
+                     <span class="text-radar-accent mt-1.5 text-[10px] font-bold shrink-0">{{ idx + 1 }}.</span>
+                     <span>{{ ac }}</span>
+                   </li>
+                 </ul>
+               </div>
+               <!-- Progress -->
+               <div v-if="selectedStory.progress">
+                 <h4 class="text-[10px] font-bold uppercase tracking-widest text-radar-dim mb-2">Progress</h4>
+                 <div class="flex items-center gap-4 mb-2">
+                   <div class="flex-1 h-2 bg-radar-bg rounded-full overflow-hidden">
+                     <div class="h-full bg-gradient-to-r from-radar-accent to-radar-success transition-all" :style="{ width: (selectedStory.progress.percent || 0) + '%' }"></div>
+                   </div>
+                   <span class="text-xs font-bold text-radar-accent shrink-0">{{ selectedStory.progress.percent || 0 }}%</span>
+                 </div>
+                 <div class="text-[10px] text-radar-dim">{{ selectedStory.progress.done_tasks || 0 }}/{{ selectedStory.progress.total_tasks || 0 }} tasks complete</div>
+               </div>
+               <!-- Tasks -->
+               <div v-if="getStoryTasks(selectedStory).length > 0">
+                 <h4 class="text-[10px] font-bold uppercase tracking-widest text-radar-dim mb-2">Tasks</h4>
+                 <div class="space-y-2">
+                   <div v-for="task in getStoryTasks(selectedStory)" :key="task.id" class="flex items-center gap-3 bg-radar-bg border border-radar-border rounded px-3 py-2">
+                     <span class="text-[10px] font-mono text-radar-dim shrink-0">#{{ task.id }}</span>
+                     <span class="text-xs text-radar-text flex-1 truncate">{{ task.description }}</span>
+                     <span :class="taskStatusBadge(task.status)" class="text-[9px] px-2 py-0.5 rounded-full font-medium uppercase shrink-0">{{ task.status }}</span>
+                   </div>
+                 </div>
+               </div>
+               <!-- Completion Notes -->
+               <div v-if="selectedStory.completion_notes">
+                 <h4 class="text-[10px] font-bold uppercase tracking-widest text-radar-dim mb-2">Completion Notes</h4>
+                 <p class="text-sm text-radar-muted leading-relaxed">{{ selectedStory.completion_notes }}</p>
+               </div>
+             </div>
+             <!-- Modal Footer -->
+             <div class="px-6 py-3 border-t border-radar-border flex items-center justify-between text-[10px] text-radar-dim">
+               <span>Created: {{ formatDate(selectedStory.created_at) }}</span>
+               <span v-if="selectedStory.updated_at">Updated: {{ formatDate(selectedStory.updated_at) }}</span>
+             </div>
+           </div>
+         </div>
+       </div></main></div><script>
     const { createApp, ref, computed, onMounted, onUnmounted, nextTick, watch } = Vue;
 
     createApp({
@@ -246,6 +313,7 @@
         const allClarifications = ref([]);
         const storyKanban = ref({});
         const pipelineStatuses = ref({});
+        const selectedStory = ref(null);
 
         // Project Creation State
         const newProjectName = ref('');
@@ -375,9 +443,19 @@
         };
 
         const taskStatusBadge = (status) => {
-          const map = { in_progress: 'bg-radar-accent/10 text-radar-accent', pending: 'bg-radar-warning/10 text-radar-warning', done: 'bg-radar-success/10 text-radar-success', failed: 'bg-radar-danger/10 text-radar-danger', escalated: 'bg-radar-danger/10 text-radar-danger' };
-          return map[status] || 'bg-radar-dim/10 text-radar-dim';
-        };
+           const map = { in_progress: 'bg-radar-accent/10 text-radar-accent', pending: 'bg-radar-warning/10 text-radar-warning', done: 'bg-radar-success/10 text-radar-success', failed: 'bg-radar-danger/10 text-radar-danger', escalated: 'bg-radar-danger/10 text-radar-danger' };
+           return map[status] || 'bg-radar-dim/10 text-radar-dim';
+         };
+
+        const storyStatusBadge = (status) => {
+           const map = { backlog: 'bg-radar-warning/10 text-radar-warning', in_progress: 'bg-radar-accent/10 text-radar-accent', testing: 'bg-purple-400/10 text-purple-400', architect_review: 'bg-yellow-400/10 text-yellow-400', done: 'bg-radar-success/10 text-radar-success' };
+           return map[status] || 'bg-radar-dim/10 text-radar-dim';
+         };
+
+        const formatDate = (ts) => {
+           if (!ts) return '-';
+           try { return new Date(ts).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' }); } catch { return ts; }
+         };
 
         const eventTime = (ts) => {
           if (!ts) return '--:--:--';
@@ -583,15 +661,28 @@
         };
 
         const runFullPipeline = async (taskId) => {
-          try {
-            const res = await fetch('/api/stage-gate/full', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ task_id: taskId, notes: 'Full pipeline via Kanban UI' }),
-            });
-            await Promise.all([fetchRegistry(), fetchKanban()]);
-          } catch (e) {}
-        };
+           try {
+             const res = await fetch('/api/stage-gate/full', {
+               method: 'POST',
+               headers: { 'Content-Type': 'application/json' },
+               body: JSON.stringify({ task_id: taskId, notes: 'Full pipeline via Kanban UI' }),
+             });
+             await Promise.all([fetchRegistry(), fetchKanban()]);
+           } catch (e) {}
+         };
+
+         const openStoryDetail = (story) => {
+           selectedStory.value = story;
+         };
+
+         const closeStoryDetail = () => {
+           selectedStory.value = null;
+         };
+
+         const getStoryTasks = (story) => {
+           if (!story || !story.progress || !story.progress.tasks) return [];
+           return story.progress.tasks;
+         };
 
         // --- WebSocket & Lifecycle ---
 
@@ -639,17 +730,22 @@
                 else agents.value.push(data.data);
               } else if (data.type === 'clarification_update') {
                 if (data.pending) await Promise.all([fetchClarifications(), fetchProjects()]);
-               } else if (data.type === 'project_update' || data.type === 'stage_gate_update') {
-                // Handle pipeline status from project_update
-                if (data.data && data.data.phase && data.data.message) {
-                  pipelineStatuses.value[data.data.project_id || activeProjectId.value] = {
-                    phase: data.data.phase,
-                    message: data.data.message,
-                    timestamp: new Date().toISOString(),
-                  };
-                }
-                await Promise.all([fetchProjects(), fetchRegistry(), fetchKanban(), fetchStoryKanban(), fetchClarifications()]);
-              }
+                } else if (data.type === 'story_update') {
+                 // Real-time story update from websocket — replace full story kanban
+                 if (data.board) {
+                   storyKanban.value = data.board;
+                 }
+                } else if (data.type === 'project_update' || data.type === 'stage_gate_update') {
+                 // Handle pipeline status from project_update
+                 if (data.data && data.data.phase && data.data.message) {
+                   pipelineStatuses.value[data.data.project_id || activeProjectId.value] = {
+                     phase: data.data.phase,
+                     message: data.data.message,
+                     timestamp: new Date().toISOString(),
+                   };
+                 }
+                 await Promise.all([fetchProjects(), fetchRegistry(), fetchKanban(), fetchStoryKanban(), fetchClarifications()]);
+               }
             } catch (err) { console.error('WS error:', err); }
           };
 
@@ -674,18 +770,19 @@
         });
 
         return {
-          isConnected, tasks, agents, events, clock, streamContainer,
-           viewMode, activeProjectId, activeTab, taskViewMode, activeProject,
-           projects, kanbanColumns, storyColumns, storyKanban,
-           connectionDot, connectionLabel, taskStats, totalTasks, progressPercent,
-           sortedTasks, filteredClarifications, activeAgentCount, displayedEvents, kanbanColumnTasks,
-          taskStatusBadge, eventTime, eventTypeColor, eventSummary,
-          agentStatusClass, agentStatusLabel, priorityBadge,
-          submitForVerification, runQAGate, runArchitectGate, runFullPipeline,
-          newProjectName, newProjectDescription, submitting, submitResult,
-          submitNewProject, selectProject, clarificationAnswers, answerClarification,
-           promptInput, sendPrompt, projectStatusBadge, storyColumnItems, activePipelineStatus
-        };
+           isConnected, tasks, agents, events, clock, streamContainer,
+            viewMode, activeProjectId, activeTab, taskViewMode, activeProject,
+            projects, kanbanColumns, storyColumns, storyKanban,
+            connectionDot, connectionLabel, taskStats, totalTasks, progressPercent,
+            sortedTasks, filteredClarifications, activeAgentCount, displayedEvents, kanbanColumnTasks,
+           taskStatusBadge, storyStatusBadge, eventTime, eventTypeColor, eventSummary,
+           agentStatusClass, agentStatusLabel, priorityBadge,
+           submitForVerification, runQAGate, runArchitectGate, runFullPipeline,
+           newProjectName, newProjectDescription, submitting, submitResult,
+           submitNewProject, selectProject, clarificationAnswers, answerClarification,
+            promptInput, sendPrompt, projectStatusBadge, storyColumnItems, activePipelineStatus,
+            selectedStory, openStoryDetail, closeStoryDetail, getStoryTasks, formatDate
+         };
       }
     }).mount('#app');
   </script></body></html>

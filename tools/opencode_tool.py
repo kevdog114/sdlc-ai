@@ -33,7 +33,23 @@ _server_port: Optional[int] = None
 _server_hostname: str = "127.0.0.1"
 
 
+def _sync_state() -> None:
+    """Sync module-level connection state with environment variables if present."""
+    global _server_port, _server_hostname
+    env_host = os.environ.get("OPENCODE_HOST")
+    env_port = os.environ.get("OPENCODE_PORT")
+
+    if env_host:
+        _server_hostname = env_host
+    if env_port:
+        try:
+            _server_port = int(env_port)
+        except ValueError:
+            pass
+
 def _get_base_url() -> Optional[str]:
+    """Return the base URL for API calls, syncing state from environment first."""
+    _sync_state()
     if _server_port is None:
         return None
     return f"http://{_server_hostname}:{_server_port}"
@@ -154,14 +170,35 @@ def stop_server() -> Dict[str, Any]:
 
 def is_server_running() -> bool:
     """Check if the OpenCode server is up and responding."""
+    # First, try to use existing module state
     base_url = _get_base_url()
-    if not base_url:
-        return False
-    try:
-        resp = requests.get(f"{base_url}/global/health", timeout=3)
-        return resp.status_code == 200
-    except requests.RequestException:
-        return False
+    if base_url:
+        try:
+            resp = requests.get(f"{base_url}/global/health", timeout=3)
+            return resp.status_code == 200
+        except requests.RequestException:
+            pass
+
+    # If module state is empty, try to discover the server by scanning default ports
+    for port in range(_DEFAULT_PORT, _DEFAULT_PORT + 10):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(1)
+                if s.connect_ex(('127.0.0.1', port)) == 0:
+                    # Port is open! Check if it's actually an HTTP server
+                    try:
+                        resp = requests.get(f"http://127.0.0.1:{port}/global/health", timeout=3)
+                        if resp.status_code == 200:
+                            # Update module state so future calls are fast
+                            global _server_port, _server_hostname
+                            _server_port = port
+                            _server_hostname = "127.0.0.1"
+                            return True
+                    except requests.RequestException:
+                        continue
+        except Exception:
+            continue
+    return False
 
 
 # ── Session / Task Execution ────────────────────────────────────
@@ -264,11 +301,20 @@ def execute_task(
 
     # Build message payload
     message_body: Dict[str, Any] = {
-        "message": full_prompt,
+        "parts": [
+            {"type": "text", "text": full_prompt}
+        ],
         "system": system_prompt,
     }
     if model:
-        message_body["model"] = model
+        parts = model.split("/", 1)
+        if len(parts) == 2:
+            message_body["model"] = {
+                "providerID": parts[0],
+                "modelID": parts[1],
+            }
+        else:
+            message_body["model"] = parts[0]
     if agent:
         message_body["agent"] = agent
 

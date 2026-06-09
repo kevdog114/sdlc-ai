@@ -25,11 +25,12 @@ STORY_REGISTRY_PATH = STATE_DIR / "story_registry.json"
 STATE_FILE_PATH = STATE_DIR / "project_state.json"
 EVENT_LOG_PATH = LOGS_DIR / "event_log.jsonl"
 CLARIFICATION_PATH = STATE_DIR / "clarifications.json"
+LLM_LOG_DIR = BASE_DIR / "llm_log"
 
 
 def ensure_dirs():
     """Create the required directory structure."""
-    for d in (TASKS_DIR, LOGS_DIR, STATE_DIR, AGENT_JOBS_DIR, INTERFACE_SPECS_DIR):
+    for d in (TASKS_DIR, LOGS_DIR, STATE_DIR, AGENT_JOBS_DIR, INTERFACE_SPECS_DIR, LLM_LOG_DIR):
         d.mkdir(parents=True, exist_ok=True)
 
 
@@ -257,6 +258,7 @@ def init_project_state(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any
             "testing": [],
             "architect_review": [],
             "done": [],
+            "failed": [],
         },
         "active_agents": {}
     }

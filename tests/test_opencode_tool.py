@@ -111,10 +111,10 @@ class TestExecuteTask:
         try:
             oc._server_port = 4096
 
-            def fake_post(path, json_body=None, **kwargs):
+            def fake_post(path, **kwargs):
                 resp = MagicMock()
                 resp.status_code = 200
-                if path == "/session":
+                if path.endswith("/session"):
                     resp.json.return_value = {"id": "test-session"}
                 elif "/message" in path:
                     resp.json.return_value = {
@@ -161,14 +161,14 @@ class TestExecuteTask:
             oc._server_port = 4096
             captured_body = {}
 
-            def fake_post(path, json_body=None, **kwargs):
+            def fake_post(path, **kwargs):
                 nonlocal captured_body
                 resp = MagicMock()
                 resp.status_code = 200
-                if path == "/session":
+                if path.endswith("/session"):
                     resp.json.return_value = {"id": "sess-1"}
                 elif "/message" in path:
-                    captured_body = json_body or {}
+                    captured_body = kwargs.get("json") or {}
                     resp.json.return_value = {
                         "info": {"id": "msg-1"},
                         "parts": [{"content": "Done."}]
@@ -195,7 +195,8 @@ class TestExecuteTask:
                             interface_spec="GET /users",
                         )
 
-            msg = captured_body.get("message", "")
+            parts = captured_body.get("parts", [])
+            msg = parts[0].get("text", "") if parts else ""
             assert "INTERFACE CONTRACT" in msg
             assert "GET /users" in msg
         finally:

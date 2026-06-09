@@ -22,6 +22,8 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("OrchestratorDaemon")
 
 class OrchestratorDaemon:
+    MAX_CONCURRENT_AGENTS = 2
+
     def __init__(self, poll_interval: int = 5):
         self.poll_interval = poll_interval
         self.running = True
@@ -55,12 +57,14 @@ class OrchestratorDaemon:
         if not role_descriptions:
             return "developer"
 
+        joined_roles = "\n".join(role_descriptions)
+        joined_options = ", ".join(available_roles)
         prompt = (
             f"Available roles and their capabilities:\n"
-            f"{'\n'.join(role_descriptions)}\n\n"
+            f"{joined_roles}\n\n"
             f"Task: {task_description}\n\n"
             f"Return ONLY the name of the single best role for this task. "
-            f"Valid options: {', '.join(available_roles)}. "
+            f"Valid options: {joined_options}. "
             f"Default to 'developer' if unsure."
         )
 
@@ -121,6 +125,19 @@ class OrchestratorDaemon:
             state["active_agents"] = active_agents
             save_project_state(state)
 
+    def _count_running_agents(self, active_agents: dict) -> int:
+        """Count agents whose underlying process is still alive."""
+        running = 0
+        for metadata in active_agents.values():
+            pid = metadata.get("pid")
+            if pid:
+                try:
+                    os.kill(pid, 0)
+                    running += 1
+                except OSError:
+                    pass
+        return running
+
     def _process_pending_tasks(self):
         """Look for pending tasks and spawn agents to handle them."""
         pending_tasks = list_tasks(status="pending")
@@ -133,6 +150,11 @@ class OrchestratorDaemon:
         active_agents = state.get("active_agents", {})
         # Map of job_id -> task_id to know what to update when the agent finishes
         # In a production system, this should be persistent in project_state.json
+
+        running_count = self._count_running_agents(active_agents)
+        if running_count >= self.MAX_CONCURRENT_AGENTS:
+            logger.info(f"Concurrency limit reached ({running_count}/{self.MAX_CONCURRENT_AGENTS} running). Deferring {len(pending_tasks)} pending tasks.")
+            return
         
         for task in pending_tasks:
             task_id = task["id"]
@@ -146,6 +168,11 @@ class OrchestratorDaemon:
             )
 
             if not is_being_handled:
+                running_count = self._count_running_agents(active_agents)
+                if running_count >= self.MAX_CONCURRENT_AGENTS:
+                    logger.info(f"Concurrency limit reached mid-batch ({running_count}/{self.MAX_CONCURRENT_AGENTS}). Stopping spawn loop.")
+                    break
+
                 role = self._get_available_role(description)
                 logger.info(f"Spawning agent '{role}' for task #{task_id}: {description}")
                 

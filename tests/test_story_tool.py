@@ -50,7 +50,17 @@ class TestCreateStory(_TestSetup):
         assert story["priority"] == "high"
         assert story["acceptance_criteria"] == ["Criterion 1"]
         assert story["task_ids"] == []
+        assert story["dependencies"] == []
         assert story["completion_notes"] is None
+
+    def test_create_with_dependencies(self):
+        s1 = story_tool.create_story("First")
+        s2 = story_tool.create_story("Second", dependencies=["STORY-1"])
+        assert s2["dependencies"] == ["STORY-1"]
+
+    def test_create_ignores_invalid_dependencies(self):
+        s1 = story_tool.create_story("First", dependencies=["STORY-999"])
+        assert s1["dependencies"] == []
 
     def test_create_increments_id(self):
         s1 = story_tool.create_story("First")
@@ -238,13 +248,13 @@ class TestDeriveStoryStatus(_TestSetup):
         sid = self._create_story_with_tasks(["done", "completed"])
         assert story_tool.derive_story_status(sid) == "done"
 
-    def test_rejected_counts_as_backlog(self):
+    def test_rejected_counts_as_failed(self):
         sid = self._create_story_with_tasks(["rejected"])
-        assert story_tool.derive_story_status(sid) == "backlog"
+        assert story_tool.derive_story_status(sid) == "failed"
 
-    def test_failed_counts_as_backlog(self):
+    def test_failed_counts_as_failed(self):
         sid = self._create_story_with_tasks(["failed"])
-        assert story_tool.derive_story_status(sid) == "backlog"
+        assert story_tool.derive_story_status(sid) == "failed"
 
     def test_testing_passed_counts_as_testing(self):
         sid = self._create_story_with_tasks(["testing_passed"])
@@ -386,3 +396,116 @@ class TestGetColumnStories(_TestSetup):
     def test_empty_column(self):
         stories = story_tool.get_column_stories("done")
         assert stories == []
+
+
+# ── Dependency Management ───────────────────────────────────────
+
+
+class TestAddStoryDependency(_TestSetup):
+    def test_add_dependency(self):
+        s1 = story_tool.create_story("First")
+        s2 = story_tool.create_story("Second")
+        assert story_tool.add_story_dependency(s2["id"], s1["id"])
+        s2_loaded = story_tool.get_story(s2["id"])
+        assert s1["id"] in s2_loaded["dependencies"]
+
+    def test_add_self_dependency_fails(self):
+        s1 = story_tool.create_story("Solo")
+        assert not story_tool.add_story_dependency(s1["id"], s1["id"])
+
+    def test_add_invalid_dependency_fails(self):
+        s1 = story_tool.create_story("Solo")
+        assert not story_tool.add_story_dependency(s1["id"], "STORY-999")
+
+    def test_add_duplicate_dependency_noop(self):
+        s1 = story_tool.create_story("First")
+        s2 = story_tool.create_story("Second")
+        story_tool.add_story_dependency(s2["id"], s1["id"])
+        assert not story_tool.add_story_dependency(s2["id"], s1["id"])
+        s2_loaded = story_tool.get_story(s2["id"])
+        assert s2_loaded["dependencies"].count(s1["id"]) == 1
+
+    def test_circular_dependency_prevented(self):
+        s1 = story_tool.create_story("First")
+        s2 = story_tool.create_story("Second")
+        story_tool.add_story_dependency(s2["id"], s1["id"])
+        assert not story_tool.add_story_dependency(s1["id"], s2["id"])
+
+
+class TestRemoveStoryDependency(_TestSetup):
+    def test_remove_dependency(self):
+        s1 = story_tool.create_story("First")
+        s2 = story_tool.create_story("Second")
+        story_tool.add_story_dependency(s2["id"], s1["id"])
+        assert story_tool.remove_story_dependency(s2["id"], s1["id"])
+        s2_loaded = story_tool.get_story(s2["id"])
+        assert s1["id"] not in s2_loaded["dependencies"]
+
+    def test_remove_nonexistent_dependency(self):
+        s1 = story_tool.create_story("First")
+        s2 = story_tool.create_story("Second")
+        assert not story_tool.remove_story_dependency(s2["id"], s1["id"])
+
+
+class TestStoryExecutionOrder(_TestSetup):
+    def test_no_dependencies_any_order(self):
+        s1 = story_tool.create_story("A")
+        s2 = story_tool.create_story("B")
+        order = story_tool.get_story_execution_order()
+        assert set(order) == {s1["id"], s2["id"]}
+
+    def test_dependency_order_respected(self):
+        s1 = story_tool.create_story("First")
+        s2 = story_tool.create_story("Second", dependencies=["STORY-1"])
+        order = story_tool.get_story_execution_order()
+        assert order.index(s1["id"]) < order.index(s2["id"])
+
+    def test_chain_order(self):
+        s1 = story_tool.create_story("First")
+        s2 = story_tool.create_story("Second", dependencies=["STORY-1"])
+        s3 = story_tool.create_story("Third", dependencies=["STORY-2"])
+        order = story_tool.get_story_execution_order()
+        assert order == [s1["id"], s2["id"], s3["id"]]
+
+
+class TestGetReadyStories(_TestSetup):
+    def test_no_deps_always_ready(self):
+        s1 = story_tool.create_story("First")
+        ready = story_tool.get_ready_stories()
+        assert any(s["id"] == s1["id"] for s in ready)
+
+    def test_blocked_by_undone_dependency(self):
+        s1 = story_tool.create_story("First")
+        t1 = bootstrap.add_task("Task for first")
+        story_tool.add_task_to_story(s1["id"], t1["id"])
+        s2 = story_tool.create_story("Second", dependencies=["STORY-1"])
+        ready = story_tool.get_ready_stories()
+        assert not any(s["id"] == s2["id"] for s in ready)
+
+
+class TestGetStoryDependencies(_TestSetup):
+    def test_returns_dependency_details(self):
+        s1 = story_tool.create_story("First")
+        s2 = story_tool.create_story("Second", dependencies=["STORY-1"])
+        deps = story_tool.get_story_dependencies(s2["id"])
+        assert len(deps) == 1
+        assert deps[0]["story_id"] == s1["id"]
+        assert deps[0]["title"] == "First"
+
+    def test_no_dependencies(self):
+        s1 = story_tool.create_story("Solo")
+        deps = story_tool.get_story_dependencies(s1["id"])
+        assert deps == []
+
+    def test_nonexistent_story(self):
+        deps = story_tool.get_story_dependencies("STORY-999")
+        assert deps == []
+
+
+class TestDeleteStoryCleansDependencies(_TestSetup):
+    def test_removes_from_other_dependencies(self):
+        s1 = story_tool.create_story("First")
+        s2 = story_tool.create_story("Second", dependencies=["STORY-1"])
+        story_tool.delete_story(s1["id"])
+        s2_loaded = story_tool.get_story(s2["id"])
+        assert s1["id"] not in s2_loaded["dependencies"]

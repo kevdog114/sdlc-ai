@@ -223,12 +223,11 @@ class _FileChangeHandler(FileSystemEventHandler):
                     _sys.path.insert(0, sys_path)
                 if tools_path not in _sys.path:
                     _sys.path.insert(0, tools_path)
-                from story_tool import list_stories, sync_all_stories
-                sync_all_stories()
-                stories = list_stories()
+                from story_tool import get_story_board_state
+                board = get_story_board_state()
                 _broadcast({
                     "type": "story_update",
-                    "stories": stories,
+                    "board": board,
                 })
             except Exception:
                 pass

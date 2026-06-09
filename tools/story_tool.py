@@ -47,7 +47,7 @@ _STATUS_WEIGHT = {
 }
 
 # Story status columns
-STORY_COLUMNS = ["backlog", "in_progress", "testing", "architect_review", "done"]
+STORY_COLUMNS = ["backlog", "in_progress", "testing", "architect_review", "done", "failed"]
 
 # Statuses that count as "active work" (not backlog)
 _ACTIVE_STATUSES = {"in_progress", "pending_verification", "testing", "testing_passed", "architect_review"}
@@ -73,19 +73,32 @@ def create_story(
     description: str = "",
     acceptance_criteria: Optional[List[str]] = None,
     priority: str = "medium",
+    dependencies: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
-    """Create a new user story and return it."""
+    """Create a new user story and return it.
+
+    Args:
+        title: Story title.
+        description: Story description.
+        acceptance_criteria: List of acceptance criteria.
+        priority: high, medium, or low.
+        dependencies: List of story IDs this story depends on (e.g., ["STORY-1"]).
+    """
     registry = _load_story_registry()
     story_num = registry.get("next_id", 1)
     registry["next_id"] = story_num + 1
 
     story_id = f"STORY-{story_num}"
+    existing_ids = {s["id"] for s in registry.get("stories", [])}
+    valid_deps = [d for d in (dependencies or []) if d in existing_ids]
+
     story = {
         "id": story_id,
         "title": title,
         "description": description,
         "acceptance_criteria": acceptance_criteria or [],
         "priority": priority if priority in ("high", "medium", "low") else "medium",
+        "dependencies": valid_deps,
         "task_ids": [],
         "completion_notes": None,
         "created_at": _now(),
@@ -96,7 +109,7 @@ def create_story(
 
     append_event(
         "tool:story",
-        {"action": "create", "story_id": story_id, "title": title, "success": True},
+        {"action": "create", "story_id": story_id, "title": title, "dependencies": valid_deps, "success": True},
     )
     return story
 
@@ -167,10 +180,14 @@ def update_story(
 
 
 def delete_story(story_id: str) -> bool:
-    """Remove a story. Does NOT delete child tasks."""
+    """Remove a story. Does NOT delete child tasks. Removes this story from other stories' dependencies."""
     registry = _load_story_registry()
     original_len = len(registry["stories"])
     registry["stories"] = [s for s in registry["stories"] if s["id"] != str(story_id)]
+
+    for story in registry["stories"]:
+        if str(story_id) in story["dependencies"]:
+            story["dependencies"].remove(str(story_id))
 
     if len(registry["stories"]) < original_len:
         _save_story_registry(registry)
@@ -180,6 +197,198 @@ def delete_story(story_id: str) -> bool:
         )
         return True
     return False
+
+
+# ── Dependency Management ───────────────────────────────────────
+
+
+def add_story_dependency(story_id: str, depends_on: str) -> bool:
+    """Add a dependency between stories.
+
+    Args:
+        story_id: The story that depends on another.
+        depends_on: The story ID that must complete first.
+
+    Returns:
+        True if the dependency was added, False if invalid or already exists.
+    """
+    registry = _load_story_registry()
+    existing_ids = {s["id"] for s in registry.get("stories", [])}
+
+    if depends_on not in existing_ids:
+        return False
+    if depends_on == story_id:
+        return False
+
+    for story in registry["stories"]:
+        if story["id"] == str(story_id):
+            if depends_on not in story["dependencies"]:
+                story["dependencies"].append(depends_on)
+                story["updated_at"] = _now()
+
+                # Validate no circular dependency
+                if _has_circular_dependency(story_id, registry):
+                    story["dependencies"].remove(depends_on)
+                    story["updated_at"] = _now()
+                    _save_story_registry(registry)
+                    append_event(
+                        "tool:story",
+                        {"action": "add_dependency", "story_id": story_id, "depends_on": depends_on,
+                         "success": False, "error": "would create circular dependency"},
+                    )
+                    return False
+
+                _save_story_registry(registry)
+                append_event(
+                    "tool:story",
+                    {"action": "add_dependency", "story_id": story_id, "depends_on": depends_on, "success": True},
+                )
+                return True
+            break
+    return False
+
+
+def remove_story_dependency(story_id: str, depends_on: str) -> bool:
+    """Remove a dependency between stories."""
+    registry = _load_story_registry()
+
+    for story in registry["stories"]:
+        if story["id"] == str(story_id):
+            if depends_on in story["dependencies"]:
+                story["dependencies"].remove(depends_on)
+                story["updated_at"] = _now()
+                _save_story_registry(registry)
+                append_event(
+                    "tool:story",
+                    {"action": "remove_dependency", "story_id": story_id, "depends_on": depends_on, "success": True},
+                )
+                return True
+            break
+    return False
+
+
+def _has_circular_dependency(story_id: str, registry: Dict[str, Any], visited: Optional[Set[str]] = None) -> bool:
+    """Check if adding a dependency would create a circular reference."""
+    if visited is None:
+        visited = set()
+
+    if story_id in visited:
+        return True
+    visited.add(story_id)
+
+    story = None
+    for s in registry.get("stories", []):
+        if s["id"] == story_id:
+            story = s
+            break
+
+    if not story:
+        return False
+
+    for dep_id in story.get("dependencies", []):
+        if _has_circular_dependency(dep_id, registry, visited):
+            return True
+    return False
+
+
+def get_story_execution_order() -> List[str]:
+    """Return story IDs in valid execution order (topological sort).
+
+    Stories with no dependencies come first. Stories that depend on
+    completed stories are never blocked by failed ones -- only by
+    stories that haven't finished yet.
+
+    Returns:
+        List of story IDs in execution order.
+    """
+    registry = _load_story_registry()
+    stories = registry.get("stories", [])
+    story_map = {s["id"]: s for s in stories}
+
+    in_degree: Dict[str, int] = {s["id"]: 0 for s in stories}
+    dependents: Dict[str, List[str]] = {s["id"]: [] for s in stories}
+
+    for s in stories:
+        for dep_id in s.get("dependencies", []):
+            if dep_id in story_map:
+                in_degree[s["id"]] += 1
+                dependents[dep_id].append(s["id"])
+
+    queue = [sid for sid, deg in in_degree.items() if deg == 0]
+    queue.sort()
+    result: List[str] = []
+
+    while queue:
+        current = queue.pop(0)
+        result.append(current)
+        for dep_sid in sorted(dependents.get(current, [])):
+            in_degree[dep_sid] -= 1
+            if in_degree[dep_sid] == 0:
+                queue.append(dep_sid)
+        queue.sort()
+
+    if len(result) != len(stories):
+        for s in stories:
+            if s["id"] not in result:
+                result.append(s["id"])
+
+    return result
+
+
+def get_ready_stories() -> List[Dict[str, Any]]:
+    """Return stories whose dependencies are all satisfied.
+
+    A dependency is satisfied when the dependent story is in 'done' status.
+
+    Returns:
+        List of story dicts ready for execution.
+    """
+    order = get_story_execution_order()
+    ready = []
+
+    for sid in order:
+        story = get_story(sid)
+        if not story:
+            continue
+
+        deps = story.get("dependencies", [])
+        if not deps:
+            ready.append(story)
+            continue
+
+        all_deps_done = True
+        for dep_id in deps:
+            dep_status = derive_story_status(dep_id)
+            if dep_status not in ("done",):
+                all_deps_done = False
+                break
+
+        if all_deps_done:
+            ready.append(story)
+
+    return ready
+
+
+def get_story_dependencies(story_id: str) -> List[Dict[str, Any]]:
+    """Return dependency details for a story.
+
+    Returns:
+        List of {story_id, title, status} for each dependency.
+    """
+    story = get_story(story_id)
+    if not story:
+        return []
+
+    deps = []
+    for dep_id in story.get("dependencies", []):
+        dep = get_story(dep_id)
+        if dep:
+            deps.append({
+                "story_id": dep["id"],
+                "title": dep["title"],
+                "status": derive_story_status(dep["id"]),
+            })
+    return deps
 
 
 # ── Task Linking ────────────────────────────────────────────────
@@ -298,6 +507,11 @@ def derive_story_status(story_id: str) -> str:
     if all(s in terminal for s in statuses):
         return "done"
 
+    # All tasks failed/rejected/escalated
+    failed_states = {"failed", "rejected", "escalated"}
+    if all(s in failed_states for s in statuses):
+        return "failed"
+
     # Check for architect review
     if "architect_review" in statuses:
         return "architect_review"
@@ -350,6 +564,7 @@ def _status_to_column(status: str) -> str:
         "testing": "testing",
         "architect_review": "architect_review",
         "done": "done",
+        "failed": "failed",
     }
     return mapping.get(status, "backlog")
 

@@ -15,6 +15,7 @@ ENV/
 # Project specific
 logs/
 runtime_logs/
+llm_log/*.json
 state/*.json
 state/
 state.old/
@@ -33,3 +34,6 @@ test_manual.txt
 
 # OS files
 .DS_Store
+
+# Opencode debug logs
+opencode_logs/
