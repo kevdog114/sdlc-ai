@@ -36,7 +36,7 @@ from tools.interface_tool import (
 def clean_state(tmp_path):
     """Provide isolated state directories for each test."""
     specs_dir = tmp_path / "state" / "interface_specs"
-    specs_dir.mkdir(parents=True)
+    specs_dir.mkdir(parents=True, exist_ok=True)
 
     state_file = tmp_path / "state" / "project_state.json"
     state_file.parent.mkdir(parents=True, exist_ok=True)

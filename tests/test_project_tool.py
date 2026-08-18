@@ -18,7 +18,6 @@ from tools.project_tool import (
     _execute_story_tasks,
     _continue_to_architect,
     _continue_to_execution,
-    PROJECTS_DIR,
 )
 
 
@@ -291,45 +290,20 @@ class TestGetProjectStatus:
 
 class TestListProjects:
     def test_lists_projects(self):
-        mock_dir = MagicMock()
-        mock_dir.glob.return_value = [
-            Path("/fake/proj-abc.json"),
-            Path("/fake/proj-def.json"),
-        ]
+        from tools.project_tool import create_project_record
 
-        def fake_load(path, default=None):
-            data = {
-                "/fake/proj-abc.json": {
-                    "id": "proj-abc",
-                    "description": "First project",
-                    "phase": "ba_analysis",
-                    "status": "active",
-                    "created_at": "2026-01-01",
-                },
-                "/fake/proj-def.json": {
-                    "id": "proj-def",
-                    "description": "Second project",
-                    "phase": "complete",
-                    "status": "completed",
-                    "created_at": "2026-01-02",
-                },
-            }
-            return data.get(str(path), default)
+        create_project_record("First project", "First")
+        create_project_record("Second project", "Second")
 
-        with patch('tools.project_tool.PROJECTS_DIR', mock_dir):
-            with patch('tools.project_tool.load_json', side_effect=fake_load):
-                projects = list_projects()
+        projects = list_projects()
 
         assert len(projects) == 2
-        assert projects[0]["id"] == "proj-abc"
-        assert projects[1]["id"] == "proj-def"
+        assert all(p["id"].startswith("proj-") for p in projects)
+        names = {p["name"] for p in projects}
+        assert names == {"First", "Second"}
 
     def test_empty_when_no_projects(self):
-        mock_dir = MagicMock()
-        mock_dir.glob.return_value = []
-        with patch('tools.project_tool.PROJECTS_DIR', mock_dir):
-            projects = list_projects()
-        assert projects == []
+        assert list_projects() == []
 
 
 class TestExecuteStoryTasks:
