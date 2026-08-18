@@ -536,16 +536,49 @@ class AgentRuntime:
             self._finalize_task(error_msg, success=False)
 
     def _finalize_task(self, result: str, success: bool):
-        """Update task status and project state upon completion."""
+        """Update task status and project state upon completion.
+
+        A successful run does NOT self-certify "done" — it goes through the
+        stage-gate pipeline like every other execution path. If the gates
+        cannot run, the task is left in pending_verification (fail closed),
+        never silently completed.
+        """
         if self.task_id:
-            try:
-                from registry_tool import update_task_status
-                status = "done" if success else "failed"
-                update_task_status(
-                    self.task_id, status, notes=f"Runtime result: {result[:500]}"
-                )
-            except ImportError:
-                pass
+            if success:
+                try:
+                    from tools.stage_gate_tool import run_full_pipeline
+                    pipeline = run_full_pipeline(
+                        self.task_id, developer_notes=f"Runtime result: {result[:800]}"
+                    )
+                    append_event(
+                        "system:runtime",
+                        {
+                            "action": "stage_gates",
+                            "job_id": self.job_id,
+                            "task_id": self.task_id,
+                            "passed": pipeline.get("success", False),
+                            "stopped_at": pipeline.get("stopped_at"),
+                        },
+                    )
+                except Exception as e:
+                    try:
+                        from registry_tool import update_task_status
+                        update_task_status(
+                            self.task_id,
+                            "pending_verification",
+                            notes=f"Stage gates unavailable ({e}); awaiting verification. "
+                                  f"Runtime result: {result[:400]}",
+                        )
+                    except ImportError:
+                        pass
+            else:
+                try:
+                    from registry_tool import update_task_status
+                    update_task_status(
+                        self.task_id, "failed", notes=f"Runtime result: {result[:500]}"
+                    )
+                except ImportError:
+                    pass
 
         state = load_project_state()
         if self.job_id in state.get("active_agents", {}):

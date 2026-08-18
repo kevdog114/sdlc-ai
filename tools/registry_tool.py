@@ -63,36 +63,27 @@ def get_task_by_id(task_id: int) -> Optional[Dict[str, Any]]:
 
 
 def update_task_status(task_id: int, new_status: str, notes: str = "") -> bool:
-    """Update the status (and optional notes) of an existing task."""
+    """Update the status (and optional notes) of an existing task.
+
+    Delegates to bootstrap.update_task_status — the single implementation —
+    so every status change also updates the per-task file, updated_at, the
+    kanban board, and the event log. (Previously this module had its own
+    lossy write that left the board stale.)
+    """
     try:
-        registry = load_json(TASK_REGISTRY_PATH, {})
-        for task in registry.get("tasks", []):
-            if task["id"] == task_id:
-                task["status"] = new_status
-                if notes:
-                    task["completion_notes"] = notes
-                save_json(TASK_REGISTRY_PATH, registry)
-                append_event(
-                    "tool:registry_manager",
-                    {
-                        "action": "update_status",
-                        "task_id": task_id,
-                        "new_status": new_status,
-                        "success": True,
-                    },
-                )
-                return True
+        import bootstrap
+        updated = bootstrap.update_task_status(task_id, new_status, notes=notes or None)
         append_event(
             "tool:registry_manager",
             {
                 "action": "update_status",
                 "task_id": task_id,
                 "new_status": new_status,
-                "success": False,
-                "error": "not_found",
+                "success": updated is not None,
+                **({} if updated is not None else {"error": "not_found"}),
             },
         )
-        return False
+        return updated is not None
     except Exception as e:
         append_event(
             "tool:registry_manager",

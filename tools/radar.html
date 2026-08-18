@@ -333,6 +333,7 @@
           { key: 'testing', label: 'Testing', color: 'text-purple-400' },
           { key: 'architect_review', label: 'Arch Review', color: 'text-yellow-400' },
           { key: 'done', label: 'Done', color: 'text-radar-success' },
+          { key: 'blocked', label: 'Blocked', color: 'text-radar-danger' },
         ];
         watch([() => viewMode.value, () => activeProjectId.value], ([newView, newId]) => {
           console.log("[DEBUG] View changed:", newView, "ID:", newId);

@@ -18,8 +18,6 @@ from bootstrap import (
 # Status -> kanban column mapping
 STATUS_TO_COLUMN = {
     "pending": "backlog",
-    "blocked": "backlog",
-    "blocked_interface_gap": "backlog",
     "in_progress": "in_progress",
     "pending_verification": "testing",
     "testing": "testing",
@@ -27,12 +25,17 @@ STATUS_TO_COLUMN = {
     "architect_review": "architect_review",
     "done": "done",
     "completed": "done",
-    "failed": "backlog",
-    "rejected": "backlog",
-    "escalated": "backlog",
+    # Stuck or dead work gets its own column so it is visible, instead of
+    # masquerading as fresh backlog.
+    "blocked": "blocked",
+    "blocked_interface_gap": "blocked",
+    "blocked_needs_human": "blocked",
+    "failed": "blocked",
+    "rejected": "blocked",
+    "escalated": "blocked",
 }
 
-COLUMN_ORDER = ["backlog", "in_progress", "testing", "architect_review", "done"]
+COLUMN_ORDER = ["backlog", "in_progress", "testing", "architect_review", "done", "blocked"]
 
 
 def get_column_for_status(status: str) -> str:
@@ -141,6 +144,19 @@ def transfer_task(task_id: int, from_column: str, to_column: str) -> bool:
     if from_column not in COLUMN_ORDER or to_column not in COLUMN_ORDER:
         return False
 
+    # "Done" is written only by the stage-gate pipeline — a manual drag must
+    # never certify work. Refuse unless the task already passed the gates.
+    if to_column == "done":
+        import bootstrap  # call-time lookup: honors runtime path redirects
+        task = bootstrap.get_task(task_id)
+        if not task or task.get("status") not in ("done", "completed"):
+            append_event(
+                "tool:kanban",
+                {"action": "transfer_refused", "task_id": task_id,
+                 "reason": "manual move to done requires gate approval"},
+            )
+            return False
+
     # Reverse-map column -> canonical status
     column_status_map = {
         "backlog": "pending",
@@ -148,6 +164,7 @@ def transfer_task(task_id: int, from_column: str, to_column: str) -> bool:
         "testing": "testing",
         "architect_review": "architect_review",
         "done": "done",
+        "blocked": "blocked",
     }
 
     move_task_to_column(task_id, to_column)

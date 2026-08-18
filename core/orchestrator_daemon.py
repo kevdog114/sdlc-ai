@@ -173,7 +173,13 @@ class OrchestratorDaemon:
                     logger.info(f"Concurrency limit reached mid-batch ({running_count}/{self.MAX_CONCURRENT_AGENTS}). Stopping spawn loop.")
                     break
 
-                role = self._get_available_role(description)
+                # Honor the task's assigned agent when it maps to a real role;
+                # only fall back to LLM selection for unassigned tasks.
+                assigned = task.get("agent")
+                if assigned and (BASE_DIR / "roles" / f"{assigned}.yaml").is_file():
+                    role = assigned
+                else:
+                    role = self._get_available_role(description)
                 logger.info(f"Spawning agent '{role}' for task #{task_id}: {description}")
                 
                 spawn_res = spawn_agent(goal=description, persona=role, task_id=task_id)

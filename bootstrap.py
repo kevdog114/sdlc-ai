@@ -95,6 +95,7 @@ def add_task(
         "updated_at": _now(),
         "verification_artifacts": [],
         "completion_notes": None,
+        "retry_count": 0,
     }
     registry["tasks"].append(task)
     save_json(TASK_REGISTRY_PATH, registry)
@@ -137,6 +138,21 @@ def update_task_status(task_id: int, status: str, notes: Optional[str] = None) -
                     "new_status": status,
                 },
             )
+            return task
+    return None
+
+
+def update_task_fields(task_id: int, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Update arbitrary fields on a task (e.g. retry_count), syncing the
+    per-task file and updated_at. Status changes should go through
+    update_task_status so the kanban board stays in sync."""
+    registry = load_json(TASK_REGISTRY_PATH, {})
+    for task in registry.get("tasks", []):
+        if task["id"] == task_id:
+            task.update(updates)
+            task["updated_at"] = _now()
+            save_json(TASK_REGISTRY_PATH, registry)
+            save_json(TASKS_DIR / f"task_{task_id}.json", task)
             return task
     return None
 
@@ -253,6 +269,7 @@ def init_project_state(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any
             "testing": [],
             "architect_review": [],
             "done": [],
+            "blocked": [],
         },
         "stories_kanban": {
             "backlog": [],

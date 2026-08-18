@@ -72,42 +72,34 @@ class TestGetTaskById:
 
 
 class TestUpdateTaskStatus:
+    # update_task_status now delegates to bootstrap's single implementation
+    # (kanban sync, per-task file, event log), so these tests run against the
+    # real (hermetic) state instead of patching internals.
+
     def test_update_existing_task(self):
-        registry = {
-            "tasks": [{"id": 1, "status": "pending", "description": "task 1"}],
-            "next_id": 2,
-        }
-        with patch('tools.registry_tool.load_json') as mock_load:
-            mock_load.return_value = registry
-            with patch('tools.registry_tool.save_json') as mock_save:
-                with patch('tools.registry_tool.append_event'):
-                    result = update_task_status(1, "done", "completed")
-            assert result is True
-            assert registry["tasks"][0]["status"] == "done"
-            assert registry["tasks"][0]["completion_notes"] == "completed"
-            mock_save.assert_called_once()
+        import bootstrap
+        task = bootstrap.add_task("task 1", agent="developer")
+        result = update_task_status(task["id"], "done", "completed")
+        assert result is True
+        refreshed = bootstrap.get_task(task["id"])
+        assert refreshed["status"] == "done"
+        assert refreshed["completion_notes"] == "completed"
 
     def test_update_nonexistent_task(self):
-        with patch('tools.registry_tool.load_json') as mock_load:
-            mock_load.return_value = {"tasks": [{"id": 1, "status": "pending"}]}
-            with patch('tools.registry_tool.append_event'):
-                result = update_task_status(999, "done")
-            assert result is False
+        result = update_task_status(999, "done")
+        assert result is False
 
     def test_update_task_no_notes(self):
-        registry = {
-            "tasks": [{"id": 1, "status": "pending", "description": "task 1"}],
-        }
-        with patch('tools.registry_tool.load_json') as mock_load:
-            mock_load.return_value = registry
-            with patch('tools.registry_tool.save_json'):
-                with patch('tools.registry_tool.append_event'):
-                    result = update_task_status(1, "in_progress")
-            assert result is True
-            assert registry["tasks"][0]["status"] == "in_progress"
+        import bootstrap
+        task = bootstrap.add_task("task 1", agent="developer")
+        result = update_task_status(task["id"], "in_progress")
+        assert result is True
+        refreshed = bootstrap.get_task(task["id"])
+        assert refreshed["status"] == "in_progress"
+        assert refreshed["completion_notes"] is None
 
     def test_update_task_exception(self):
-        with patch('tools.registry_tool.load_json', side_effect=Exception("json error")):
+        with patch('bootstrap.update_task_status', side_effect=Exception("boom")):
             with patch('tools.registry_tool.append_event'):
                 result = update_task_status(1, "done")
             assert result is False

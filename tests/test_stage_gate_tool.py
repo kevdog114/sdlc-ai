@@ -373,4 +373,6 @@ class TestKanbanSync(_TestSetup):
 
         state = bootstrap.load_project_state()
         kanban = state.get("kanban", {})
-        assert task["id"] in kanban.get("backlog", [])
+        # Rejected work is surfaced in the blocked column, not hidden as
+        # fresh backlog.
+        assert task["id"] in kanban.get("blocked", [])

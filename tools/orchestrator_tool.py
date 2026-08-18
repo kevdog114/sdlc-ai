@@ -31,7 +31,10 @@ from tools.story_tool import (
     get_story,
 )
 
-ROLES_DIR = BASE_DIR / "roles"
+# Roles are repo data that lives next to the code — anchored on this file, not
+# on bootstrap.BASE_DIR, which callers (pulse_server, tests) redirect at
+# runtime to relocate *state*. Redirecting state must never lose the personas.
+ROLES_DIR = Path(__file__).resolve().parent.parent / "roles"
 
 TASK_STATUS_PENDING = "pending"
 TASK_STATUS_IN_PROGRESS = "in_progress"
@@ -44,6 +47,7 @@ TASK_STATUS_FAILED = "failed"
 TASK_STATUS_REJECTED = "rejected"
 TASK_STATUS_ESCALATED = "escalated"
 TASK_STATUS_BLOCKED_INTERFACE_GAP = "blocked_interface_gap"
+TASK_STATUS_BLOCKED_NEEDS_HUMAN = "blocked_needs_human"
 
 MAX_RETRIES = 2
 
@@ -281,91 +285,122 @@ def delegate_task(
         except ImportError:
             pass
 
+    def _execute_once(prompt: str) -> Dict[str, Any]:
+        """Run the task once via OpenCode (developers) or the LLM (other roles)."""
+        # Route developer tasks through OpenCode; other roles use direct LLM
+        if role_name == "developer":
+            try:
+                from tools.opencode_tool import execute_task, start_server, is_server_running
+
+                if not is_server_running():
+                    srv = start_server()
+                    if not srv.get("success"):
+                        return {
+                            "success": False,
+                            "output": "",
+                            "error": srv.get("error", "OpenCode server failed to start"),
+                        }
+
+                oc_result = execute_task(
+                    task_description=task_description,
+                    system_prompt=system_prompt,
+                    interface_spec=spec_content,
+                    additional_context=(context or "") + (
+                        "" if prompt == user_prompt else
+                        f"\n\n{prompt[len(user_prompt):]}"
+                    ),
+                )
+                return {
+                    "success": oc_result.get("success", False),
+                    "output": oc_result.get("output", ""),
+                    "error": oc_result.get("error", "OpenCode task failed"),
+                }
+            except ImportError:
+                append_event(
+                    "tool:orchestrator",
+                    {"action": "delegate_task", "task_id": task_id, "role": role_name,
+                     "success": False, "error": "opencode_tool not available, falling back to LLM"},
+                )
+
+        llm_result = query_llm(prompt, system_prompt=system_prompt)
+        return {
+            "success": llm_result.get("success", False),
+            "output": llm_result.get("content", ""),
+            "error": llm_result.get("error", "Unknown LLM error"),
+        }
+
+    # ── Attempt loop with circuit breaker ───────────────────────
+    # Each gate rejection (or execution failure) feeds its reason back into
+    # the next attempt. After MAX_RETRIES retries the task stops looping:
+    # gate rejections block for a human decision; execution failures fail.
+    success = False
+    output = ""
     error_msg = "Unknown error"
+    stage_gate_results: List[Dict[str, Any]] = []
+    rejected_gate: Optional[str] = None
+    attempts_allowed = MAX_RETRIES + 1
 
-    # Route developer tasks through OpenCode; other roles use direct LLM
-    if role_name == "developer":
-        try:
-            from tools.opencode_tool import execute_task, start_server, is_server_running
-
-            if not is_server_running():
-                srv = start_server()
-                if not srv.get("success"):
-                    error_msg = srv.get("error", "OpenCode server failed to start")
-                    append_event(
-                        "tool:orchestrator",
-                        {"action": "delegate_task", "task_id": task_id, "role": role_name,
-                         "success": False, "error": error_msg},
-                    )
-                    return {"task_id": task_id, "success": False, "output": "",
-                            "error": error_msg, "stage_gates": []}
-
-            oc_result = execute_task(
-                task_description=task_description,
-                system_prompt=system_prompt,
-                interface_spec=spec_content,
-                additional_context=context,
+    for attempt in range(1, attempts_allowed + 1):
+        prompt_for_attempt = user_prompt
+        if attempt > 1:
+            prompt_for_attempt += (
+                f"\n\nPREVIOUS ATTEMPT (#{attempt - 1}) DID NOT PASS. "
+                f"Reason:\n{error_msg[:800]}\n\n"
+                f"Address this feedback and redo the task correctly."
             )
-            output = oc_result.get("output", "")
-            success = oc_result.get("success", False)
-            if not success:
-                error_msg = oc_result.get("error", "OpenCode task failed")
-        except ImportError:
-            append_event(
-                "tool:orchestrator",
-                {"action": "delegate_task", "task_id": task_id, "role": role_name,
-                 "success": False, "error": "opencode_tool not available, falling back to LLM"},
-            )
-            llm_result = query_llm(user_prompt, system_prompt=system_prompt)
-            output = llm_result.get("content", "")
-            success = llm_result.get("success", False)
-            if not success:
-                error_msg = llm_result.get("error", "Unknown LLM error")
-    else:
-        llm_result = query_llm(user_prompt, system_prompt=system_prompt)
-        output = llm_result.get("content", "")
-        success = llm_result.get("success", False)
+
+        exec_result = _execute_once(prompt_for_attempt)
+        success = exec_result["success"]
+        output = exec_result["output"]
+
         if not success:
-            error_msg = llm_result.get("error", "Unknown LLM error")
-
-    if success:
-        # Run stage gate pipeline
-        stage_gate_results = []
-        if run_stage_gates:
+            rejected_gate = None
+            error_msg = exec_result["error"]
+        elif run_stage_gates:
             try:
                 from tools.stage_gate_tool import run_full_pipeline
-                pipeline = run_full_pipeline(task_id, developer_notes=output[:500])
-                stage_gate_results = pipeline.get("results", [])
-                success = pipeline["success"]
-                if not success:
-                    stopped = pipeline.get("stopped_at", "unknown")
-                    last_failure = next(
-                        (r for r in stage_gate_results if not r.get("passed", True)),
-                        {},
-                    )
-                    error_msg = last_failure.get("feedback", f"Rejected at {stopped} gate")
-                    append_event(
-                        "tool:orchestrator",
-                        {
-                            "action": "delegate_task",
-                            "task_id": task_id,
-                            "role": role_name,
-                            "success": False,
-                            "rejected_at": stopped,
-                            "error": error_msg[:500],
-                        },
-                    )
-                    return {
-                        "task_id": task_id,
-                        "success": False,
-                        "output": output,
-                        "error": error_msg,
-                        "stage_gates": stage_gate_results,
-                    }
             except ImportError:
-                pass
+                break
+            pipeline = run_full_pipeline(task_id, developer_notes=output[:500])
+            stage_gate_results = pipeline.get("results", [])
+            success = pipeline.get("success", False)
+            if success:
+                break
+            rejected_gate = pipeline.get("stopped_at", "unknown")
+            last_failure = next(
+                (r for r in stage_gate_results if not r.get("passed", True)),
+                {},
+            )
+            error_msg = last_failure.get("feedback", f"Rejected at {rejected_gate} gate")
+        else:
+            break
 
-        registry_update(task_id, TASK_STATUS_DONE, notes=output[:500])
+        if attempt < attempts_allowed:
+            retry_count = _increment_retry(task_id)
+            append_event(
+                "tool:orchestrator",
+                {
+                    "action": "delegate_task_retry",
+                    "task_id": task_id,
+                    "role": role_name,
+                    "attempt": attempt,
+                    "retry_count": retry_count,
+                    "rejected_at": rejected_gate,
+                    "error": error_msg[:500],
+                },
+            )
+            registry_update(
+                task_id, TASK_STATUS_IN_PROGRESS,
+                notes=f"Retry {attempt}/{MAX_RETRIES} after: {error_msg[:200]}",
+            )
+
+    if success:
+        if run_stage_gates and stage_gate_results:
+            # The architect gate already set the task to done with its
+            # approval note — do not clobber the signoff record.
+            pass
+        else:
+            registry_update(task_id, TASK_STATUS_DONE, notes=output[:500])
         store_insight(
             f"task-{task_id}-{role_name}",
             f"Task: {task_description}\nResult: {output[:1000]}",
@@ -375,8 +410,17 @@ def delegate_task(
             {"action": "delegate_task", "task_id": task_id, "role": role_name, "success": True},
         )
         return {"task_id": task_id, "success": True, "output": output, "error": None, "stage_gates": stage_gate_results}
-    else:
-        registry_update(task_id, TASK_STATUS_FAILED, notes=error_msg[:500])
+
+    if rejected_gate is not None:
+        # Circuit breaker: repeatedly rejected work stops looping and goes to
+        # a human instead of burning tokens or dying silently.
+        _block_for_human(
+            task_id=task_id,
+            task_description=task_description,
+            gate=rejected_gate,
+            reason=error_msg,
+            project_id=project_id,
+        )
         append_event(
             "tool:orchestrator",
             {
@@ -384,10 +428,88 @@ def delegate_task(
                 "task_id": task_id,
                 "role": role_name,
                 "success": False,
-                "error": error_msg,
+                "blocked": True,
+                "rejected_at": rejected_gate,
+                "error": error_msg[:500],
             },
         )
-        return {"task_id": task_id, "success": False, "output": "", "error": error_msg, "stage_gates": []}
+        return {
+            "task_id": task_id,
+            "success": False,
+            "output": output,
+            "error": error_msg,
+            "blocked": True,
+            "stage_gates": stage_gate_results,
+        }
+
+    registry_update(task_id, TASK_STATUS_FAILED, notes=error_msg[:500])
+    append_event(
+        "tool:orchestrator",
+        {
+            "action": "delegate_task",
+            "task_id": task_id,
+            "role": role_name,
+            "success": False,
+            "error": error_msg,
+        },
+    )
+    return {"task_id": task_id, "success": False, "output": "", "error": error_msg, "stage_gates": stage_gate_results}
+
+
+def _increment_retry(task_id: int) -> int:
+    """Persist a retry increment on the task record and return the new count."""
+    from bootstrap import update_task_fields
+    task = get_task(task_id) or {}
+    count = int(task.get("retry_count") or 0) + 1
+    update_task_fields(task_id, {"retry_count": count})
+    return count
+
+
+def _block_for_human(
+    task_id: int,
+    task_description: str,
+    gate: str,
+    reason: str,
+    project_id: Optional[str] = None,
+) -> None:
+    """Escalate a repeatedly-rejected task to a human decision.
+
+    Sets blocked_needs_human (surfaced in the kanban "blocked" column) and
+    files a clarification request so the question reaches the dashboard and
+    Telegram like any other human-input need.
+    """
+    registry_update(
+        task_id,
+        TASK_STATUS_BLOCKED_NEEDS_HUMAN,
+        notes=(
+            f"Blocked after {MAX_RETRIES + 1} rejected attempts "
+            f"(last: {gate} gate): {reason[:300]}"
+        ),
+    )
+    append_event(
+        "tool:orchestrator",
+        {
+            "action": "blocked_needs_human",
+            "task_id": task_id,
+            "gate": gate,
+            "reason": reason[:500],
+        },
+    )
+    try:
+        from tools.clarification_tool import create_request
+        create_request(
+            project_id=project_id or "unassigned",
+            question=(
+                f"Task #{task_id} was rejected {MAX_RETRIES + 1} times at the "
+                f"'{gate}' gate and needs your decision (retry with guidance, "
+                f"re-scope, or drop). Task: {task_description[:200]}"
+            ),
+            context=f"Last rejection reason: {reason[:500]}",
+            phase="execution",
+            asked_via=["dashboard"],
+        )
+    except Exception:
+        pass
 
 
 # ── Interface Gap Handling ──────────────────────────────────────
@@ -544,8 +666,12 @@ def handle_failure(
     retry_count = task.get("retry_count", 0)
 
     if retry_count < max_retries:
-        task["retry_count"] = retry_count + 1
-        registry_update(task_id, TASK_STATUS_PENDING, notes=f"Retry {retry_count + 1}/{max_retries}")
+        # Persist the increment — an in-memory bump is lost on the next
+        # registry read, which made the re-assign/escalate branches
+        # unreachable.
+        new_count = _increment_retry(task_id)
+        task["retry_count"] = new_count
+        registry_update(task_id, TASK_STATUS_PENDING, notes=f"Retry {new_count}/{max_retries}")
         result = delegate_task(description, original_role, existing_task_id=task_id)
         action = "retry"
 

@@ -203,8 +203,10 @@ class TestDelegateTask:
 
         status_calls = [c for c in mock_upd.call_args_list]
         assert status_calls[0][0] == (100, TASK_STATUS_IN_PROGRESS)
-        assert status_calls[1][0][0] == 100
-        assert status_calls[1][0][1] == TASK_STATUS_DONE
+        # When the gates ran, the architect's approval note IS the completion
+        # record — the orchestrator must not overwrite it with a second
+        # "done" write.
+        assert all(c[0][1] != TASK_STATUS_DONE for c in status_calls)
 
     def test_delegate_failure(self):
         mock_task = {"id": 101, "description": "failing task", "status": "pending", "agent": "developer"}
@@ -213,7 +215,7 @@ class TestDelegateTask:
         with patch('tools.orchestrator_tool.create_new_task', return_value=mock_task):
             with patch('tools.orchestrator_tool.registry_update') as mock_upd:
                 with patch('tools.opencode_tool.is_server_running', return_value=True):
-                    with patch('tools.opencode_tool.execute_task', return_value=mock_oc):
+                    with patch('tools.opencode_tool.execute_task', return_value=mock_oc) as mock_exec:
                         with patch('tools.orchestrator_tool.append_event'):
                             result = delegate_task("failing task", "developer")
 
@@ -221,8 +223,10 @@ class TestDelegateTask:
         assert result["task_id"] == 101
         assert result["error"] == "Connection timeout"
 
-        status_calls = [c for c in mock_upd.call_args_list]
-        assert status_calls[1][0][1] == TASK_STATUS_FAILED
+        # Execution failures are retried (initial + MAX_RETRIES attempts)
+        # before giving up, and the terminal state is failed.
+        assert mock_exec.call_count == 3
+        assert mock_upd.call_args_list[-1][0][1] == TASK_STATUS_FAILED
 
     def test_delegate_unknown_role(self):
         with patch('tools.orchestrator_tool.append_event'):
@@ -478,14 +482,13 @@ class TestHandleFailure:
         assert task["retry_count"] == 1
 
     def test_retry_on_second_failure(self):
-        task = {
-            "id": 201,
-            "description": "retryable task 2",
-            "agent": "developer",
-            "retry_count": 1,
-            "status": "failed",
-        }
-        mock_result = {"task_id": 202, "success": True, "output": "Fixed on retry 2.", "error": None}
+        # Retry counts are persisted in the registry now, so the task must be
+        # a real registry record, not an ad-hoc dict.
+        import bootstrap
+        created = bootstrap.add_task("retryable task 2", agent="developer", status="failed")
+        bootstrap.update_task_fields(created["id"], {"retry_count": 1})
+        task = bootstrap.get_task(created["id"])
+        mock_result = {"task_id": created["id"], "success": True, "output": "Fixed on retry 2.", "error": None}
 
         with patch('tools.orchestrator_tool.registry_update'):
             with patch('tools.orchestrator_tool.delegate_task', return_value=mock_result):
@@ -494,7 +497,7 @@ class TestHandleFailure:
 
         assert result["action"] == "retry"
         assert result["success"] is True
-        assert task["retry_count"] == 2
+        assert bootstrap.get_task(created["id"])["retry_count"] == 2
 
     def test_reassign_after_max_retries(self):
         task = {
@@ -721,30 +724,27 @@ class TestFailureRecovery:
         assert result["success"] is True
 
     def test_retry_twice_then_reassign_then_succeed(self):
-        task = {
-            "id": 401,
-            "description": "stubborn task",
-            "agent": "developer",
-            "retry_count": 1,
-            "status": "failed",
-        }
+        # Persisted retry counts drive the escalation ladder: retry while
+        # below MAX_RETRIES, then re-assign.
+        import bootstrap
+        created = bootstrap.add_task("stubborn task", agent="developer", status="failed")
+        bootstrap.update_task_fields(created["id"], {"retry_count": 1})
 
         def delegate_side_effect(*args, **kwargs):
             role = args[1] if len(args) > 1 else kwargs.get("role_name", "developer")
             if role == "developer":
-                return {"task_id": 402, "success": True, "output": "Fixed by dev retry.", "error": None}
-            return {"task_id": 403, "success": True, "output": "Fixed by QA.", "error": None}
+                return {"task_id": created["id"], "success": True, "output": "Fixed by dev retry.", "error": None}
+            return {"task_id": created["id"], "success": True, "output": "Fixed by QA.", "error": None}
 
         with patch('tools.orchestrator_tool.registry_update'):
             with patch('tools.orchestrator_tool.delegate_task', side_effect=delegate_side_effect):
                 with patch('tools.orchestrator_tool.list_roles', return_value=["developer", "qa"]):
                     with patch('tools.orchestrator_tool.append_event'):
-                        r1 = handle_failure(task, "still broken")
+                        r1 = handle_failure(bootstrap.get_task(created["id"]), "still broken")
                         assert r1["action"] == "retry"
-                        assert task["retry_count"] == 2
+                        assert bootstrap.get_task(created["id"])["retry_count"] == 2
 
-                        task["status"] = "failed"
-                        r2 = handle_failure(task, "still broken again")
+                        r2 = handle_failure(bootstrap.get_task(created["id"]), "still broken again")
                         assert r2["action"] == "re-assign"
 
     def test_full_escalation_path(self):

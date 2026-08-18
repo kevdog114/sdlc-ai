@@ -60,11 +60,12 @@ SPEC_VALIDATION_PROMPT = (
     "- Schema mismatches in request/response types\n"
     "- Missing required fields\n"
     "- Deviations from the defined contract\n\n"
-    "Respond with:\n"
+    "RESPONSE FORMAT (mandatory): the FIRST LINE of your response must be "
+    "exactly one of these two words, followed by ' - ' and your justification:\n"
     "COMPLIANT - [brief justification]\n"
-    "or\n"
     "NON_COMPLIANT - [specific violations that need to be fixed]\n\n"
-    "Be strict about contract adherence."
+    "Do not write anything before the verdict word. Be strict about contract "
+    "adherence."
 )
 
 
@@ -341,7 +342,14 @@ def validate_implementation_against_spec(
 
     content = result["content"].strip()
     feedback = content[:1000]
-    compliant = "COMPLIANT" in content.upper() and "NON_COMPLIANT" not in content.upper()
+    # Anchored, fail-closed verdict parse: "NON_COMPLIANT", "NON-COMPLIANT",
+    # and "NOT COMPLIANT" all fail; a response with no leading verdict fails.
+    from tools.stage_gate_tool import parse_gate_verdict
+    compliant, _matched = parse_gate_verdict(
+        content,
+        pass_tokens=("COMPLIANT",),
+        fail_tokens=("NON_COMPLIANT", "NONCOMPLIANT", "NON"),
+    )
 
     append_event(
         "tool:interface",
