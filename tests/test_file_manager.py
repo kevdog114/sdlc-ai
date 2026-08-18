@@ -1,29 +1,36 @@
+"""Tests for tools/file_manager.py.
+
+File operations are confined to the allowed roots (bootstrap.BASE_DIR,
+USER_PROJECTS_ROOT, SDLCAI_FILE_ROOTS) — conftest points BASE_DIR at a
+per-test tmp dir, so tests operate inside it. The escape/denial cases live in
+tests/test_security.py::TestFileConfinement.
+"""
+
 import sys
-import tempfile
-import os
 from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import bootstrap
 from tools.file_manager import read_file, write_file, list_dir, delete_file
+
+
+def _p(*parts) -> str:
+    """A path inside the hermetic project root."""
+    return str(Path(bootstrap.BASE_DIR).joinpath(*parts))
 
 
 class TestReadFile:
     def test_read_existing_file(self):
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
-            f.write('test content')
-            f.flush()
-            tmp_path = f.name
-        try:
-            result = read_file(tmp_path)
-            assert result['success'] is True
-            assert result['content'] == 'test content'
-        finally:
-            os.unlink(tmp_path)
+        target = Path(_p("sample.txt"))
+        target.write_text("test content", encoding="utf-8")
+        result = read_file(str(target))
+        assert result['success'] is True
+        assert result['content'] == 'test content'
 
     def test_read_nonexistent_file(self):
-        result = read_file('/nonexistent/path/file.txt')
+        result = read_file(_p("nope", "file.txt"))
         assert result['success'] is False
         assert 'error' in result
 
@@ -33,13 +40,13 @@ class TestReadFile:
         assert 'error' in result
 
     def test_read_directory_instead_of_file(self):
-        result = read_file('/tmp')
+        result = read_file(_p("state"))
         assert result['success'] is False
         assert 'error' in result
 
     def test_append_event_mocked(self):
         with patch('tools.file_manager.append_event') as mock_append:
-            read_file('/nonexistent/file.txt')
+            read_file(_p("missing.txt"))
             mock_append.assert_called_once()
             call_args = mock_append.call_args
             assert call_args[0][0] == 'tool:file_manager'
@@ -49,93 +56,63 @@ class TestReadFile:
 
 class TestWriteFile:
     def test_write_new_file(self):
-        tmp_path = tempfile.mktemp(suffix='.txt')
-        try:
-            result = write_file(tmp_path, 'new content')
-            assert result['success'] is True
-            assert Path(tmp_path).read_text() == 'new content'
-        finally:
-            if Path(tmp_path).exists():
-                os.unlink(tmp_path)
+        target = _p("new.txt")
+        result = write_file(target, 'new content')
+        assert result['success'] is True
+        assert Path(target).read_text() == 'new content'
 
     def test_write_overwrite_existing(self):
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
-            f.write('original')
-            f.flush()
-            tmp_path = f.name
-        try:
-            result = write_file(tmp_path, 'overwritten')
-            assert result['success'] is True
-            assert Path(tmp_path).read_text() == 'overwritten'
-        finally:
-            os.unlink(tmp_path)
+        target = Path(_p("existing.txt"))
+        target.write_text("original", encoding="utf-8")
+        result = write_file(str(target), 'overwritten')
+        assert result['success'] is True
+        assert target.read_text() == 'overwritten'
 
     def test_write_empty_content(self):
-        tmp_path = tempfile.mktemp(suffix='.txt')
-        try:
-            result = write_file(tmp_path, '')
-            assert result['success'] is True
-            assert Path(tmp_path).read_text() == ''
-        finally:
-            if Path(tmp_path).exists():
-                os.unlink(tmp_path)
+        target = _p("empty.txt")
+        result = write_file(target, '')
+        assert result['success'] is True
+        assert Path(target).read_text() == ''
 
     def test_write_creates_parent_dirs(self):
-        tmp_dir = tempfile.mkdtemp()
-        nested_path = os.path.join(tmp_dir, 'a', 'b', 'c', 'file.txt')
-        try:
-            result = write_file(nested_path, 'nested')
-            assert result['success'] is True
-            assert Path(nested_path).read_text() == 'nested'
-        finally:
-            import shutil
-            shutil.rmtree(tmp_dir)
+        nested = _p("a", "b", "c", "file.txt")
+        result = write_file(nested, 'nested')
+        assert result['success'] is True
+        assert Path(nested).read_text() == 'nested'
 
     def test_append_event_mocked(self):
-        tmp_path = tempfile.mktemp(suffix='.txt')
         with patch('tools.file_manager.append_event') as mock_append:
-            write_file(tmp_path, 'mocked content')
+            write_file(_p("evented.txt"), 'mocked content')
             mock_append.assert_called_once()
             call_args = mock_append.call_args
             assert call_args[0][0] == 'tool:file_manager'
             assert call_args[0][1]['action'] == 'write'
             assert call_args[0][1]['success'] is True
-        if Path(tmp_path).exists():
-            os.unlink(tmp_path)
 
 
 class TestListDir:
     def test_list_existing_directory(self):
-        result = list_dir('/tmp')
+        Path(_p("stuff")).mkdir()
+        Path(_p("stuff", "one.txt")).write_text("1", encoding="utf-8")
+        result = list_dir(_p("stuff"))
         assert result['success'] is True
-        assert 'files' in result
-        assert isinstance(result['files'], list)
+        assert result['files'] == ['one.txt']
 
     def test_list_nonexistent_directory(self):
-        result = list_dir('/nonexistent/directory/path')
-        assert result['success'] is False
-        assert 'error' in result
-
-    def test_list_empty_string(self):
-        result = list_dir('./nonexistent_empty_string_dir_xyz')
+        result = list_dir(_p("no", "such", "dir"))
         assert result['success'] is False
         assert 'error' in result
 
     def test_list_file_instead_of_directory(self):
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
-            f.write('test')
-            f.flush()
-            tmp_path = f.name
-        try:
-            result = list_dir(tmp_path)
-            assert result['success'] is False
-            assert 'error' in result
-        finally:
-            os.unlink(tmp_path)
+        target = Path(_p("notadir.txt"))
+        target.write_text("x", encoding="utf-8")
+        result = list_dir(str(target))
+        assert result['success'] is False
+        assert 'error' in result
 
     def test_append_event_mocked(self):
         with patch('tools.file_manager.append_event') as mock_append:
-            list_dir('/tmp')
+            list_dir(str(bootstrap.BASE_DIR))
             mock_append.assert_called_once()
             call_args = mock_append.call_args
             assert call_args[0][0] == 'tool:file_manager'
@@ -145,16 +122,14 @@ class TestListDir:
 
 class TestDeleteFile:
     def test_delete_existing_file(self):
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
-            f.write('to delete')
-            f.flush()
-            tmp_path = f.name
-        result = delete_file(tmp_path)
+        target = Path(_p("todelete.txt"))
+        target.write_text("to delete", encoding="utf-8")
+        result = delete_file(str(target))
         assert result['success'] is True
-        assert not Path(tmp_path).exists()
+        assert not target.exists()
 
     def test_delete_nonexistent_file(self):
-        result = delete_file('/nonexistent/file/to/delete.txt')
+        result = delete_file(_p("ghost.txt"))
         assert result['success'] is False
         assert 'error' in result
 
@@ -165,7 +140,7 @@ class TestDeleteFile:
 
     def test_append_event_mocked(self):
         with patch('tools.file_manager.append_event') as mock_append:
-            delete_file('/nonexistent/file.txt')
+            delete_file(_p("ghost2.txt"))
             mock_append.assert_called_once()
             call_args = mock_append.call_args
             assert call_args[0][0] == 'tool:file_manager'

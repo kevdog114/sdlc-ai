@@ -1,25 +1,52 @@
-"""Git Tool — high-level interface for repository version control operations."""
+"""Git Tool — high-level interface for repository version control operations.
 
-from typing import Optional
+Commands run as argv lists (never shell=True): commit messages and branch
+names — which are LLM-authored and therefore attacker-influenceable — are
+passed as arguments, not interpolated into a shell string.
+"""
 
-from bootstrap import BASE_DIR, append_event
-from tools.shell_executor import execute_command
+import subprocess
+from typing import List, Optional
+
+import bootstrap
+from bootstrap import append_event
+
+GIT_TIMEOUT = 120
+
+# Branch names come from LLM output; constrain to git-plausible characters so
+# a hostile "name" can't smuggle option-like or control garbage.
+_BRANCH_OK = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._/-"
+)
 
 
-def _run_git(command: str, operation: str) -> dict:
-    """Execute a git command within the project root and return a structured response."""
-    full_command = f"cd {BASE_DIR} && {command}"
-    result = execute_command(full_command)
+def _valid_branch(name: str) -> bool:
+    return bool(name) and not name.startswith("-") and all(c in _BRANCH_OK for c in name)
 
-    success = result["exit_code"] == 0
-    output = result["stdout"] if success else ""
-    error = result["stderr"] if not success else None
+
+def _run_git(args: List[str], operation: str) -> dict:
+    """Execute one git command (argv) in the project root."""
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=str(bootstrap.BASE_DIR),
+            capture_output=True,
+            text=True,
+            timeout=GIT_TIMEOUT,
+        )
+        success = result.returncode == 0
+        output = result.stdout.strip() if success else ""
+        error = result.stderr.strip() if not success else None
+    except subprocess.TimeoutExpired:
+        success, output, error = False, "", f"git {operation} timed out after {GIT_TIMEOUT}s"
+    except OSError as e:
+        success, output, error = False, "", str(e)
 
     append_event(
         "tool:git_operation",
         {
             "operation": operation,
-            "command": command,
+            "command": "git " + " ".join(args),
             "success": success,
             "error": error,
         },
@@ -34,7 +61,7 @@ def _run_git(command: str, operation: str) -> dict:
 
 def git_status() -> dict:
     """Returns the current branch and file status (staged, unstaged, untracked)."""
-    return _run_git("git status --porcelain -b", "status")
+    return _run_git(["status", "--porcelain", "-b"], "status")
 
 
 def git_commit(message: str) -> dict:
@@ -50,20 +77,31 @@ def git_commit(message: str) -> dict:
             "error": "Commit message cannot be empty",
         }
 
-    result = _run_git(f'git add . && git commit -m "{message}"', "commit")
-    return result
+    add_result = _run_git(["add", "-A"], "commit_add")
+    if not add_result["success"]:
+        return add_result
+    # -m message as its own argv element: quotes, backticks, $() are inert.
+    return _run_git(["commit", "-m", message], "commit")
 
 
-def git_branch(name: str, action: str = "create") -> dict:
-    """Creates a new branch or switches to an existing one."""
+def git_branch(name: str = "", action: str = "create") -> dict:
+    """Creates a new branch, switches to one, deletes one, or lists branches."""
+    if action == "list":
+        return _run_git(["branch"], "branch_list")
+
+    if not _valid_branch(name):
+        append_event(
+            "tool:git_operation",
+            {"operation": f"branch_{action}", "success": False, "error": f"Invalid branch name: {name!r}"},
+        )
+        return {"success": False, "output": "", "error": f"Invalid branch name: {name!r}"}
+
     if action == "create":
-        return _run_git(f"git branch {name}", "branch_create")
+        return _run_git(["branch", name], "branch_create")
     elif action == "checkout":
-        return _run_git(f"git checkout {name}", "branch_checkout")
+        return _run_git(["checkout", name], "branch_checkout")
     elif action == "delete":
-        return _run_git(f"git branch -d {name}", "branch_delete")
-    elif action == "list":
-        return _run_git("git branch", "branch_list")
+        return _run_git(["branch", "-d", name], "branch_delete")
     else:
         append_event(
             "tool:git_operation",
@@ -78,28 +116,30 @@ def git_branch(name: str, action: str = "create") -> dict:
 
 def git_checkout(branch_name: str) -> dict:
     """Switches to a specific branch."""
-    return _run_git(f"git checkout {branch_name}", "checkout")
+    if not _valid_branch(branch_name):
+        return {"success": False, "output": "", "error": f"Invalid branch name: {branch_name!r}"}
+    return _run_git(["checkout", branch_name], "checkout")
 
 
 def git_pull(rebase: bool = False) -> dict:
     """Synchronizes the local repository with the remote (pull)."""
-    flag = "--rebase" if rebase else ""
-    return _run_git(f"git pull {flag}".strip(), "pull")
+    args = ["pull", "--rebase"] if rebase else ["pull"]
+    return _run_git(args, "pull")
 
 
 def git_push() -> dict:
     """Synchronizes the local repository with the remote (push)."""
-    return _run_git("git push", "push")
+    return _run_git(["push"], "push")
 
 
 def git_diff() -> dict:
     """Returns the current unstaged changes for reasoning."""
-    return _run_git("git diff", "diff")
+    return _run_git(["diff"], "diff")
 
 
 def git_current_branch() -> dict:
     """Returns the name of the current branch."""
-    return _run_git("git rev-parse --abbrev-ref HEAD", "current_branch")
+    return _run_git(["rev-parse", "--abbrev-ref", "HEAD"], "current_branch")
 
 
 if __name__ == "__main__":

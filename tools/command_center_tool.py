@@ -18,7 +18,9 @@ from bootstrap import BASE_DIR, append_event
 
 PID_FILE = BASE_DIR / "state" / "command_center.pid"
 PORT = 8080
-HOST = "0.0.0.0"
+# Loopback by default; pass --host to expose (requires SDLCAI_API_TOKEN —
+# the server refuses a non-local bind without one).
+HOST = "127.0.0.1"
 
 def get_host() -> str:
     """Get the host from CLI args or default."""

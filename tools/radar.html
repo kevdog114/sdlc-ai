@@ -367,6 +367,35 @@
        </div></main></div><script>
     const { createApp, ref, computed, onMounted, onUnmounted, nextTick, watch } = Vue;
 
+    // --- API auth (optional) ---
+    // When the operator configures SDLCAI_API_TOKEN on the server, every API
+    // call must carry it. The token is entered once (prompted on the first
+    // 401), kept in localStorage, and attached to same-origin /api/ requests
+    // and the WebSocket by this global wrapper.
+    const API_TOKEN_KEY = 'sdlcai_token';
+    const getApiToken = () => { try { return localStorage.getItem(API_TOKEN_KEY) || ''; } catch (e) { return ''; } };
+    const _origFetch = window.fetch.bind(window);
+    let _promptedForToken = false;
+    window.fetch = async (url, opts = {}) => {
+      const isApi = typeof url === 'string' && url.startsWith('/api/');
+      if (isApi) {
+        const t = getApiToken();
+        if (t) opts.headers = Object.assign({}, opts.headers, { 'X-API-Token': t });
+      }
+      const resp = await _origFetch(url, opts);
+      if (isApi && resp.status === 401 && !_promptedForToken) {
+        _promptedForToken = true;
+        const entered = window.prompt('This dashboard requires an API token (SDLCAI_API_TOKEN):');
+        if (entered) {
+          try { localStorage.setItem(API_TOKEN_KEY, entered.trim()); } catch (e) {}
+          _promptedForToken = false;
+          opts.headers = Object.assign({}, opts.headers, { 'X-API-Token': entered.trim() });
+          return _origFetch(url, opts);
+        }
+      }
+      return resp;
+    };
+
     createApp({
       setup() {
         console.log("[DEBUG] Setup started");
@@ -767,7 +796,8 @@
 
         const connectWS = () => {
           const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-          const wsUrl = `${protocol}//${window.location.host}/radar-ws`;
+          const token = getApiToken();
+          const wsUrl = `${protocol}//${window.location.host}/radar-ws` + (token ? `?token=${encodeURIComponent(token)}` : '');
           ws.value = new WebSocket(wsUrl);
 
           ws.value.onopen = async () => {

@@ -153,12 +153,18 @@ class TestTelegramBotPoller:
         assert poller._on_answer is callback
 
     def test_process_update_with_reply(self):
-        """Simulate receiving a reply to a clarification message."""
+        """Simulate an authorized reply to a clarification message.
+
+        Authorization requires the configured chat AND a private chat type
+        (or an explicit user-id allowlist) — a reply that steers the pipeline
+        must come from the operator.
+        """
         update = {
             "update_id": 1,
             "message": {
                 "message_id": 200,
-                "chat": {"id": "12345"},
+                "chat": {"id": "12345", "type": "private"},
+                "from": {"id": "12345"},
                 "text": "Use PostgreSQL",
                 "reply_to_message": {
                     "message_id": 100,
@@ -181,7 +187,9 @@ class TestTelegramBotPoller:
             with patch('tools.clarification_tool.answer_request') as mock_answer:
                 mock_answer.return_value = {"id": "CLR-0001", "status": "answered"}
                 with patch('tools.telegram_bot.send_message'):
-                    poller._process_update(update)
+                    with patch('tools.telegram_bot.get_config',
+                               return_value={"token": "t", "chat_id": "12345"}):
+                        poller._process_update(update)
 
         mock_answer.assert_called_once_with("CLR-0001", "Use PostgreSQL", answered_by="telegram")
         assert len(callback_called) == 1

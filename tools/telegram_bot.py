@@ -27,9 +27,16 @@ MAX_TIMEOUT = 30
 
 
 def get_config() -> Dict[str, str]:
-    """Resolve bot token and chat ID from env vars or project config."""
+    """Resolve bot token and chat ID from env vars, secrets, or project config."""
     token = os.environ.get("TELEGRAM_BOT_TOKEN") or ""
     chat_id = os.environ.get("TELEGRAM_CHAT_ID") or ""
+
+    if not token:
+        try:
+            from tools.secrets_tool import get_secret
+            token = get_secret("telegram_bot_token") or ""
+        except Exception:
+            pass
 
     if not token or not chat_id:
         try:
@@ -43,6 +50,26 @@ def get_config() -> Dict[str, str]:
             pass
 
     return {"token": token, "chat_id": chat_id}
+
+
+def get_allowed_user_ids() -> set:
+    """Telegram user IDs allowed to answer clarifications.
+
+    From TELEGRAM_ALLOWED_USER_IDS (comma-separated) or
+    project_config.telegram_allowed_user_ids. Empty set = no allowlist
+    configured; the fallback policy then only accepts the configured chat
+    when it is a PRIVATE chat, so group members can never steer the pipeline.
+    """
+    raw = os.environ.get("TELEGRAM_ALLOWED_USER_IDS", "")
+    if not raw:
+        try:
+            state = load_project_state()
+            cfg = state.get("project_config", {})
+            configured = cfg.get("telegram_allowed_user_ids", "")
+            raw = ",".join(str(u) for u in configured) if isinstance(configured, list) else str(configured or "")
+        except Exception:
+            raw = ""
+    return {part.strip() for part in raw.split(",") if part.strip()}
 
 
 def is_configured() -> bool:
@@ -166,10 +193,16 @@ class TelegramBotPoller:
 
                 if data.get("ok") and data.get("result"):
                     for update in data["result"]:
-                        self._process_update(update)
+                        # Advance the offset BEFORE processing so one poison
+                        # update can't wedge the poller into an infinite
+                        # reprocessing loop.
                         update_id = update.get("update_id", 0)
                         if update_id > self._last_update_id:
                             self._last_update_id = update_id
+                        try:
+                            self._process_update(update)
+                        except Exception as e:
+                            logger.error(f"Failed to process Telegram update {update_id}: {e}")
 
             except requests.Timeout:
                 continue
@@ -178,7 +211,14 @@ class TelegramBotPoller:
                 time.sleep(POLL_INTERVAL)
 
     def _process_update(self, update: Dict[str, Any]) -> None:
-        """Process a single Telegram update looking for replies to our messages."""
+        """Process a single Telegram update looking for replies to our messages.
+
+        Authorization: when an allowlist of user IDs is configured, only those
+        users may answer. Without one, only the configured chat is accepted
+        AND it must be a private chat — a clarification answer steers the
+        autonomous pipeline, so an arbitrary group member must never be able
+        to provide it.
+        """
         message = update.get("message")
         if not message:
             return
@@ -189,11 +229,35 @@ class TelegramBotPoller:
 
         # Check if the replied-to message is one of our clarification requests
         replied_msg_id = reply_to.get("message_id")
-        chat_id = str(message["chat"]["id"])
+        chat = message.get("chat") or {}
+        chat_id = str(chat.get("id", ""))
+        sender_id = str((message.get("from") or {}).get("id", ""))
         text = message.get("text", "")
 
         if not text:
             return
+
+        allowed_users = get_allowed_user_ids()
+        if allowed_users:
+            if sender_id not in allowed_users:
+                logger.warning(f"Rejected Telegram answer from unauthorized user {sender_id}")
+                append_event(
+                    "tool:telegram_bot",
+                    {"action": "unauthorized_reply", "sender_id": sender_id, "chat_id": chat_id},
+                )
+                return
+        else:
+            cfg = get_config()
+            if chat_id != str(cfg.get("chat_id", "")) or chat.get("type") != "private":
+                logger.warning(
+                    f"Rejected Telegram answer from chat {chat_id} "
+                    f"(type={chat.get('type')}): not the configured private chat"
+                )
+                append_event(
+                    "tool:telegram_bot",
+                    {"action": "unauthorized_reply", "sender_id": sender_id, "chat_id": chat_id},
+                )
+                return
 
         from tools.clarification_tool import (
             get_request_by_telegram_message,

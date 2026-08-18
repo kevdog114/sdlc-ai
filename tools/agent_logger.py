@@ -41,12 +41,22 @@ def _now() -> str:
 
 
 def _collect_env_vars() -> Dict[str, str]:
-    """Collect only the curated environment variables."""
+    """Collect only the curated environment variables.
+
+    Values of credential-bearing variables (API keys, tokens, secrets) are
+    redacted — the variable *name* is useful for debugging, the value must
+    never land in a log file.
+    """
+    try:
+        from tools.secrets_tool import looks_secret, REDACTED
+    except Exception:
+        looks_secret, REDACTED = (lambda n: False), "***redacted***"
+
     env = {}
     for key, value in os.environ.items():
         for prefix in _RELATIVE_ENV_PREFIXES:
             if key.startswith(prefix):
-                env[key] = value
+                env[key] = REDACTED if looks_secret(key) else value
                 break
     return env
 

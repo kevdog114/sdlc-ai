@@ -1,6 +1,7 @@
 """Pulse Server — FastAPI backend with WebSocket real-time updates."""
 
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -75,13 +76,64 @@ print(f"DEBUG: Using TASK_REGISTRY_PATH: {bootstrap.TASK_REGISTRY_PATH}")
 
 app = FastAPI(title="Command Center Pulse")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# CORS: the SPA is served from this same origin, so no cross-origin access is
+# needed by default. The old wildcard-with-credentials combo let any web page
+# the operator visited drive every state-changing endpoint. Operators who
+# really need cross-origin access can set SDLCAI_CORS_ORIGINS (comma list).
+_cors_origins = [o.strip() for o in os.environ.get("SDLCAI_CORS_ORIGINS", "").split(",") if o.strip()]
+if _cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+
+# ── API authentication ──────────────────────────────────────────
+# When an API token is configured (SDLCAI_API_TOKEN or secrets), every /api/*
+# request and the WebSocket must present it. Without a token the server only
+# ever binds to loopback (enforced in the entry points below), so the control
+# plane is reachable solely by the local operator.
+
+_PUBLIC_PATHS = {"/", "/health"}
+
+
+def _configured_api_token():
+    try:
+        from tools.secrets_tool import get_api_token
+        return get_api_token()
+    except Exception:
+        return os.environ.get("SDLCAI_API_TOKEN")
+
+
+def _request_token(request: Request) -> str:
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+    return request.headers.get("x-api-token", "") or request.query_params.get("token", "")
+
+
+@app.middleware("http")
+async def _auth_middleware(request: Request, call_next):
+    token = _configured_api_token()
+    if token and request.url.path not in _PUBLIC_PATHS:
+        import hmac
+        if not hmac.compare_digest(_request_token(request), token):
+            from starlette.responses import JSONResponse
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return await call_next(request)
+
+
+def _require_token_for_nonlocal(host: str) -> None:
+    """Fail closed: binding beyond loopback demands an API token."""
+    if host not in ("127.0.0.1", "localhost", "::1") and not _configured_api_token():
+        raise RuntimeError(
+            f"Refusing to bind to {host}: no API token configured. "
+            "Set SDLCAI_API_TOKEN (or .secrets/secrets.json api_token) to "
+            "expose the control plane beyond localhost."
+        )
 
 # State management
 connected_clients: List[WebSocket] = []
@@ -240,6 +292,9 @@ async def get_events(limit: int = 100):
     """Returns the last N events from the log."""
     return {"events": [], "message": "Event logging is currently disabled."}
 
+_TELEMETRY_MAX_AGENTS = 500
+
+
 @app.post("/api/telemetry")
 async def receive_telemetry(request: Request):
     """Receives telemetry from agents and broadcasts to clients."""
@@ -250,8 +305,13 @@ async def receive_telemetry(request: Request):
         if not agent_id:
             return {"status": "error", "message": "Missing agent_id"}
 
-        # Update local state for snapshotting/dashboarding
+        # Update local state for snapshotting/dashboarding. Bounded: a flood
+        # of unique agent_ids must not grow memory without limit — evict the
+        # stalest entry when the cap is hit.
         with lock:
+            if agent_id not in _active_agents and len(_active_agents) >= _TELEMETRY_MAX_AGENTS:
+                stalest = min(_active_agents, key=lambda a: _active_agents[a].get("last_seen", 0))
+                del _active_agents[stalest]
             _active_agents[agent_id] = {
                 **payload,
                 "last_seen": time.time()
@@ -383,8 +443,18 @@ async def stage_gate_status(task_id: int):
 
 @app.get("/api/state")
 async def get_state():
-    """Returns the full project state."""
-    return bootstrap.load_project_state()
+    """Returns the project state with credentials masked.
+
+    project_config is the documented storage location for e.g. the Telegram
+    bot token — the raw state must never leave the process unredacted.
+    """
+    state = bootstrap.load_project_state()
+    try:
+        from tools.secrets_tool import redact
+        return redact(state)
+    except Exception:
+        state.pop("project_config", None)
+        return state
 
 @app.get("/api/agents")
 async def get_active_agents():
@@ -763,6 +833,16 @@ async def websocket_endpoint(websocket: WebSocket):
     import asyncio
     _main_loop = asyncio.get_running_loop()
 
+    # Same auth as the HTTP API: when a token is configured, the socket must
+    # present it (query param — browsers can't set WS headers).
+    token = _configured_api_token()
+    if token:
+        import hmac
+        supplied = websocket.query_params.get("token", "")
+        if not hmac.compare_digest(supplied, token):
+            await websocket.close(code=4401)
+            return
+
     await websocket.accept()
     connected_clients.append(websocket)
     try:
@@ -794,8 +874,10 @@ async def websocket_endpoint(websocket: WebSocket):
 
 print("DEBUG: App mounted.")
 
-def start_pulse_server(host: str = "0.0.0.0", port: int = 8080) -> str:
+def start_pulse_server(host: str = "127.0.0.1", port: int = 8080) -> str:
     import uvicorn
+
+    _require_token_for_nonlocal(host)
 
     # Start Telegram bot poller (if configured)
     def _on_telegram_answer(request_id: str):
@@ -840,8 +922,11 @@ print("DEBUG: pulse_server module loading complete.")
 if __name__ == "__main__":
     import uvicorn
     import sys
-    host = "0.0.0.0"
+    # Loopback by default; exposing beyond localhost requires an explicit
+    # host AND a configured API token (fail closed).
+    host = os.environ.get("SDLCAI_HOST", "127.0.0.1")
     port = 8080
     if len(sys.argv) > 1:
         port = int(sys.argv[1])
+    _require_token_for_nonlocal(host)
     uvicorn.run(app, host=host, port=port, log_level="info")

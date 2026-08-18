@@ -64,6 +64,12 @@ def query_llm(
     # Only use config defaults when the caller hasn't explicitly set a value
     if not api_key:
         api_key = llm_cfg.get('api_key')
+    if not api_key:
+        try:
+            from tools.secrets_tool import get_secret
+            api_key = get_secret("llm_api_key")
+        except Exception:
+            pass
     if not base_url:
         base_url = llm_cfg.get('base_url')
     if model == "local":
@@ -171,11 +177,13 @@ def query_llm(
         resp = requests.post(endpoint, headers=headers, data=json.dumps(payload), timeout=timeout)
         
         if resp.status_code != 200:
-            print(f"\n[DEBUG] LLM Error Details:")
-            print(f"Endpoint: {endpoint}")
-            print(f"Payload: {json.dumps(payload, indent=2)}")
-            print(f"Status Code: {resp.status_code}")
-            print(f"Response Body: {resp.text}")
+            # Never dump the full payload: it contains the complete message
+            # history (and would echo any credentials in prompts) to stdout.
+            print(
+                f"[llm_tool] LLM request failed: endpoint={endpoint} "
+                f"status={resp.status_code} model={model} "
+                f"body={resp.text[:500]}"
+            )
 
         resp.raise_for_status()
         data = resp.json()
