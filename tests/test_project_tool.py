@@ -15,9 +15,9 @@ from tools.project_tool import (
     _ba_analyze,
     _architect_design,
     _create_stories_and_tasks,
-    _execute_story_tasks,
+    _persist_backlog_stories,
     _continue_to_architect,
-    _continue_to_execution,
+    _define_backlog,
 )
 
 
@@ -173,8 +173,11 @@ class TestSubmitProject:
         assert result["ambiguity_count"] == 1
         assert "clarification_ids" in result
 
-    def test_submit_no_ambiguities(self):
-        """Project without ambiguities should proceed to architect."""
+    def test_submit_defines_backlog_without_executing(self):
+        """Submitting a project ends with a persisted backlog + proposed
+        sprint — no tasks are created and nothing executes (define/execute
+        separation)."""
+        import bootstrap
         mock_ba = {
             "success": True,
             "refined_requirements": "Build a todo app.",
@@ -185,24 +188,42 @@ class TestSubmitProject:
             "architecture": "Simple CRUD app.",
             "interface_spec": "openapi: 3.0.0",
         }
+        story_specs = [
+            {"title": "Add todos", "description": "", "acceptance_criteria": ["can add"],
+             "priority": "high", "story_points": 3,
+             "tasks": [{"description": "Implement add endpoint", "role": "developer", "dependencies": []}]},
+            {"title": "List todos", "description": "", "acceptance_criteria": [],
+             "priority": "medium", "story_points": 2,
+             "tasks": [{"description": "Implement list endpoint", "role": "developer", "dependencies": []}]},
+        ]
 
-        with patch('tools.project_tool._ba_analyze', return_value=mock_ba):
-            with patch('tools.project_tool._architect_design', return_value=mock_arch):
-                with patch('tools.project_tool._create_stories_and_tasks', return_value=[
-                    {"title": "Feature", "description": "", "acceptance_criteria": [], "priority": "medium", "tasks": []},
-                ]):
-                    with patch('tools.project_tool._execute_story_tasks', return_value={
-                        "story_id": "STORY-1", "task_count": 0, "succeeded": 0, "failed": 0, "all_succeeded": True, "task_results": [],
-                    }):
-                        with patch('tools.project_tool.append_event'):
-                            with patch('tools.project_tool.save_json'):
-                                with patch('tools.project_tool.load_json', return_value={"version": "1.0.0"}):
-                                    with patch('tools.project_tool.load_project_state', return_value={}):
-                                        with patch('tools.project_tool.save_project_state'):
-                                            result = submit_project("Build a todo app")
+        with patch('tools.project_tool._ba_analyze', return_value=mock_ba), \
+             patch('tools.project_tool._architect_design', return_value=mock_arch), \
+             patch('tools.project_tool._create_stories_and_tasks', return_value=story_specs), \
+             patch('tools.sprint_tool.query_llm', return_value={"success": True, "content": "Ship todo basics"}):
+            result = submit_project("Build a todo app", name="Todo")
 
         assert result["success"] is True
-        assert result["status"] == "completed"
+        assert result["phase"] == "backlog_ready"
+        assert len(result["story_ids"]) == 2
+        assert result["proposed_sprint_id"] is not None
+        assert result["auto_executed"] is False
+
+        # Stories persisted to the real (hermetic) registry, project-scoped,
+        # with deferred task specs — and NO registry tasks were created.
+        from tools.story_tool import get_story
+        story = get_story(result["story_ids"][0])
+        assert story["project_id"] == result["project_id"]
+        assert story["story_points"] == 3
+        assert story["planned_tasks"][0]["description"] == "Implement add endpoint"
+        assert story["task_ids"] == []
+        assert bootstrap.list_tasks() == []
+
+        # The proposed sprint sits in planning, holding both stories.
+        from tools.sprint_tool import get_sprint
+        sprint = get_sprint(result["proposed_sprint_id"])
+        assert sprint["status"] == "planning"
+        assert set(sprint["story_ids"]) == set(result["story_ids"])
 
     def test_submit_ba_failure(self):
         mock_ba = {"success": False, "error": "BA analysis failed"}
@@ -306,59 +327,30 @@ class TestListProjects:
         assert list_projects() == []
 
 
-class TestExecuteStoryTasks:
-    def test_executes_tasks(self):
-        story = {
-            "title": "Auth Feature",
-            "description": "User authentication",
-            "acceptance_criteria": ["Login", "Logout"],
-            "priority": "high",
-            "tasks": [
-                {"description": "Create login page", "role": "developer", "dependencies": []},
+class TestPersistBacklogStories:
+    def test_persists_specs_as_planned_tasks(self):
+        story_ids = _persist_backlog_stories(
+            [
+                {"title": "Feature A", "priority": "high", "story_points": 5,
+                 "tasks": [
+                     {"description": "Build it", "role": "developer", "dependencies": []},
+                     {"description": "Test it", "role": "qa", "dependencies": [0]},
+                 ]},
             ],
-        }
+            "proj-x",
+        )
+        assert len(story_ids) == 1
+        from tools.story_tool import get_story
+        story = get_story(story_ids[0])
+        assert story["project_id"] == "proj-x"
+        assert story["story_points"] == 5
+        assert [t["role"] for t in story["planned_tasks"]] == ["developer", "qa"]
+        assert story["planned_tasks"][1]["dependencies"] == [0]
 
-        with patch('tools.story_tool.create_story') as mock_create:
-            mock_create.return_value = {"id": "STORY-1"}
-            with patch('tools.orchestrator_tool.delegate_task') as mock_delegate:
-                mock_delegate.return_value = {"task_id": 100, "success": True, "output": "Done.", "error": None}
-                with patch('tools.story_tool.add_task_to_story'):
-                    with patch('tools.project_tool.load_project_state', return_value={}):
-                        with patch('tools.project_tool.save_project_state'):
-                            result = _execute_story_tasks(story, "proj-test", "")
-
-        assert result["story_id"] == "STORY-1"
-        assert result["task_count"] == 1
-        assert result["succeeded"] == 1
-        assert result["all_succeeded"] is True
-
-    def test_handles_failures(self):
-        story = {
-            "title": "Failing Feature",
-            "tasks": [
-                {"description": "Task 1", "role": "developer", "dependencies": []},
-                {"description": "Task 2", "role": "developer", "dependencies": []},
-            ],
-        }
-
-        delegations = [
-            {"task_id": 101, "success": True, "output": "OK", "error": None},
-            {"task_id": 102, "success": False, "output": "", "error": "Failed"},
-        ]
-        delegation_iter = iter(delegations)
-
-        def side_effect(*args, **kwargs):
-            return next(delegation_iter)
-
-        with patch('tools.story_tool.create_story') as mock_create:
-            mock_create.return_value = {"id": "STORY-2"}
-            with patch('tools.orchestrator_tool.delegate_task', side_effect=side_effect):
-                with patch('tools.story_tool.add_task_to_story'):
-                    with patch('tools.project_tool.load_project_state', return_value={}):
-                        with patch('tools.project_tool.save_project_state'):
-                            result = _execute_story_tasks(story, "proj-test", "")
-
-        assert result["task_count"] == 2
-        assert result["succeeded"] == 1
-        assert result["failed"] == 1
-        assert result["all_succeeded"] is False
+    def test_invalid_points_snapped_to_scale(self):
+        story_ids = _persist_backlog_stories(
+            [{"title": "Big", "story_points": 7, "tasks": [{"description": "x", "role": "developer"}]}],
+            "proj-x",
+        )
+        from tools.story_tool import get_story
+        assert get_story(story_ids[0])["story_points"] == 8

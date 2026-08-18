@@ -68,12 +68,18 @@ def _save_story_registry(registry: Dict[str, Any]) -> None:
 # ── CRUD ────────────────────────────────────────────────────────
 
 
+VALID_STORY_POINTS = (1, 2, 3, 5, 8)
+
+
 def create_story(
     title: str,
     description: str = "",
     acceptance_criteria: Optional[List[str]] = None,
     priority: str = "medium",
     dependencies: Optional[List[str]] = None,
+    project_id: Optional[str] = None,
+    story_points: Optional[int] = None,
+    planned_tasks: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Create a new user story and return it.
 
@@ -83,6 +89,11 @@ def create_story(
         acceptance_criteria: List of acceptance criteria.
         priority: high, medium, or low.
         dependencies: List of story IDs this story depends on (e.g., ["STORY-1"]).
+        project_id: Owning project — the backlog is queryable per project.
+        story_points: Estimate on the 1/2/3/5/8 scale (None = unestimated).
+        planned_tasks: Deferred task specs [{description, role, dependencies}]
+            captured at definition time; real registry tasks are created only
+            when a sprint executes the story.
     """
     registry = _load_story_registry()
     story_num = registry.get("next_id", 1)
@@ -92,6 +103,9 @@ def create_story(
     existing_ids = {s["id"] for s in registry.get("stories", [])}
     valid_deps = [d for d in (dependencies or []) if d in existing_ids]
 
+    if story_points is not None and story_points not in VALID_STORY_POINTS:
+        story_points = min(VALID_STORY_POINTS, key=lambda p: abs(p - int(story_points)))
+
     story = {
         "id": story_id,
         "title": title,
@@ -99,6 +113,12 @@ def create_story(
         "acceptance_criteria": acceptance_criteria or [],
         "priority": priority if priority in ("high", "medium", "low") else "medium",
         "dependencies": valid_deps,
+        "project_id": project_id,
+        "story_points": story_points,
+        "planned_tasks": planned_tasks or [],
+        "sprint_id": None,
+        "po_acceptance": None,
+        "po_notes": None,
         "task_ids": [],
         "completion_notes": None,
         "created_at": _now(),
@@ -109,9 +129,52 @@ def create_story(
 
     append_event(
         "tool:story",
-        {"action": "create", "story_id": story_id, "title": title, "dependencies": valid_deps, "success": True},
+        {"action": "create", "story_id": story_id, "title": title,
+         "project_id": project_id, "points": story_points,
+         "dependencies": valid_deps, "success": True},
     )
     return story
+
+
+def _story_num(story_id: str) -> int:
+    """Numeric part of a STORY-N id, for numeric-aware ordering."""
+    try:
+        return int(str(story_id).rsplit("-", 1)[-1])
+    except (ValueError, IndexError):
+        return 0
+
+
+def update_story_fields(story_id: Any, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Update arbitrary fields on a story record (sprint_id, po_acceptance…)."""
+    registry = _load_story_registry()
+    lookup = f"STORY-{story_id}" if isinstance(story_id, int) else str(story_id)
+    for story in registry.get("stories", []):
+        if story["id"] == lookup:
+            story.update(updates)
+            story["updated_at"] = _now()
+            _save_story_registry(registry)
+            return story
+    return None
+
+
+def list_backlog(project_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Return the durable product backlog: stories not yet in a sprint and not
+    yet accepted by the PO, ordered by priority then numeric id.
+
+    A PO-rejected story returns to this backlog (its sprint_id is cleared on
+    rejection) carrying the po_notes for re-refinement.
+    """
+    registry = _load_story_registry()
+    prio_rank = {"high": 0, "medium": 1, "low": 2}
+
+    backlog = [
+        s for s in registry.get("stories", [])
+        if (project_id is None or s.get("project_id") == project_id)
+        and s.get("sprint_id") is None
+        and s.get("po_acceptance") != "accepted"
+    ]
+    backlog.sort(key=lambda s: (prio_rank.get(s.get("priority", "medium"), 1), _story_num(s["id"])))
+    return backlog
 
 
 def get_story(story_id: Any) -> Optional[Dict[str, Any]]:
@@ -398,8 +461,10 @@ def add_task_to_story(story_id: str, task_id: int) -> bool:
     """Link a task to a story. Updates both story and task records."""
     registry = _load_story_registry()
 
+    # Accept both "STORY-3" and 3 — same contract as get_story.
+    lookup = f"STORY-{story_id}" if isinstance(story_id, int) else str(story_id)
     for story in registry["stories"]:
-        if story["id"] == str(story_id):
+        if story["id"] == lookup:
             if task_id not in story["task_ids"]:
                 story["task_ids"].append(task_id)
                 story["updated_at"] = _now()
@@ -410,7 +475,7 @@ def add_task_to_story(story_id: str, task_id: int) -> bool:
             task_reg = load_json(_tr, {})
             for task in task_reg.get("tasks", []):
                 if task["id"] == task_id:
-                    task["story_id"] = str(story_id)
+                    task["story_id"] = lookup
                     save_json(_tr, task_reg)
                     # Update individual task file
                     task_file = BASE_DIR / "tasks" / f"task_{task_id}.json"

@@ -1,9 +1,21 @@
 """Project Tool — full SDLC pipeline entry point.
 
-Accepts a high-level project description and orchestrates:
+Accepts a high-level project description and orchestrates the *definition*
+side of the lifecycle:
   1. BA Phase: Analyze requirements, detect ambiguities, create clarification requests
   2. Architect Phase: Review refined requirements, produce architecture and interface specs
-  3. Execution Phase: Create stories/tasks, execute with stage gates (QA → Architect approval)
+  3. Backlog Phase: Persist estimated, project-scoped stories (with deferred
+     task specs) to the durable product backlog and propose a sprint.
+
+Execution is deliberately separate: sprints (tools/sprint_tool.py) pull
+stories from the backlog and run them through the gated pipeline. Submitting
+a project therefore ends with a reviewable backlog + sprint proposal, not a
+finished build — unless auto_execute is set, which starts the first sprint
+immediately.
+
+Follow-up work enters through submit_change_request(), which gives the BA the
+existing requirements, architecture, and story ledger as context and appends
+new stories to the backlog instead of re-running the pipeline from scratch.
 
 The pipeline pauses at clarification points and can be resumed once all
 ambiguities are resolved (via Telegram or Dashboard).
@@ -45,6 +57,7 @@ USER_PROJECTS_ROOT = Path("~/dev-projects/sdlc-ai/user_projects").expanduser()
 PHASE_BA_ANALYSIS = "ba_analysis"
 PHASE_ARCHITECT_DESIGN = "architect_design"
 PHASE_EXECUTION = "execution"
+PHASE_BACKLOG_READY = "backlog_ready"
 PHASE_COMPLETE = "complete"
 
 PROJECT_STATUS_ACTIVE = "active"
@@ -296,6 +309,7 @@ Create a list of user stories. Each story must have exactly these keys:
 - description: Detailed context and value statement (e.g., 'As a [user], I want to [action] so that [value]').
 - acceptance_criteria: An array of specific, measurable criteria for completion.
 - priority: One of: "high", "medium", or "low".
+- story_points: An integer estimate of relative effort/complexity. Must be one of: 1, 2, 3, 5, 8. A story you would estimate above 8 must be split into smaller stories instead.
 - tasks: An array of task objects. Each task must have:
     - description: A clear, actionable technical instruction.
     - role: One of: "developer", "qa", "researcher", "architect".
@@ -352,110 +366,74 @@ def _create_stories_and_tasks(
     return stories
 
 
-# ── Execution Phase ─────────────────────────────────────────────
+# ── Backlog Definition Phase ────────────────────────────────────
+# Execution lives in tools/sprint_tool.py: sprints pull from the backlog this
+# phase persists, and run stories through the gated pipeline.
 
 
-def _execute_story_tasks(
-    story: Dict[str, Any],
+def _persist_interface_spec(interface_spec: str, goal: str) -> Optional[str]:
+    """Write the project's interface spec file and register it. Returns spec_id."""
+    if not interface_spec:
+        return None
+    try:
+        import hashlib
+        from tools.interface_tool import ensure_specs_dir
+        spec_id = f"spec-{hashlib.md5(interface_spec.encode()).hexdigest()[:8]}"
+        spec_path = ensure_specs_dir() / f"{spec_id}.yaml"
+        spec_path.write_text(interface_spec, encoding="utf-8")
+        state = load_project_state()
+        if "interface_specs" not in state:
+            state["interface_specs"] = {}
+        state["interface_specs"][spec_id] = {
+            "id": spec_id,
+            "goal": goal,
+            "generated_at": _now(),
+            "file": f"{spec_id}.yaml",
+        }
+        state["active_spec_id"] = spec_id
+        save_project_state(state)
+        return spec_id
+    except Exception as e:
+        append_event(
+            "tool:project",
+            {"action": "persist_interface_spec", "success": False, "error": str(e)},
+        )
+        return None
+
+
+def _persist_backlog_stories(
+    story_specs: List[Dict[str, Any]],
     project_id: str,
-    interface_spec: str,
-) -> Dict[str, Any]:
-    """Execute all tasks in a story with stage gates.
+) -> List[str]:
+    """Persist LLM-proposed stories to the durable backlog (define, don't run).
 
-    Uses the orchestrator's delegate_task for each task.
-    Tasks are executed in dependency order within the story.
+    Task specs are stored as planned_tasks on each story; real registry tasks
+    are created only when a sprint executes the story.
     """
-    from tools.orchestrator_tool import delegate_task
-    from tools.story_tool import create_story, add_task_to_story
+    from tools.story_tool import create_story
 
-    # Create the story in the registry
-    s = create_story(
-        title=story["title"],
-        description=story.get("description", ""),
-        acceptance_criteria=story.get("acceptance_criteria", []),
-        priority=story.get("priority", "medium"),
-    )
-    story_id = s["id"]
-
-    # Save interface spec if provided
-    spec_id = None
-    if interface_spec:
-        try:
-            import hashlib
-            import yaml
-            from tools.interface_tool import INTERFACE_SPECS_DIR
-            spec_id = f"spec-{hashlib.md5(interface_spec.encode()).hexdigest()[:8]}"
-            spec_path = INTERFACE_SPECS_DIR / f"{spec_id}.yaml"
-            spec_path.write_text(interface_spec, encoding="utf-8")
-            # Register in state
-            state = load_project_state()
-            if "interface_specs" not in state:
-                state["interface_specs"] = {}
-            state["interface_specs"][spec_id] = {
-                "id": spec_id,
-                "goal": story["title"],
-                "generated_at": _now(),
-                "file": f"{spec_id}.yaml",
+    created_ids: List[str] = []
+    for spec in story_specs:
+        planned = [
+            {
+                "description": t.get("description", ""),
+                "role": t.get("role", "developer"),
+                "dependencies": [d for d in (t.get("dependencies") or []) if isinstance(d, int)],
             }
-            save_project_state(state)
-        except Exception:
-            pass
-
-    tasks = story.get("tasks", [])
-    results = []
-    all_succeeded = True
-    task_id_map: Dict[int, int] = {}
-
-    for idx, task in enumerate(tasks):
-        desc = task["description"]
-        role = task.get("role", "developer")
-        deps = task.get("dependencies", [])
-        dep_ids = [task_id_map.get(d) for d in deps if d in task_id_map]
-        context = f"Project: {project_id}"
-        if dep_ids:
-            context += f"\nDependencies (task IDs): {dep_ids}"
-
-        if MOCK_EXECUTION:
-            tid = f"mock-{uuid4().hex[:6]}"
-            result = {"success": True, "task_id": tid}
-        else:
-            result = delegate_task(
-                task_description=desc,
-                role_name=role,
-                context=context,
-                dependencies=dep_ids,
-                story_id=story_id,
-                interface_spec_id=spec_id,
-            )
-            tid = result.get("task_id")
-        if tid is not None:
-            task_id_map[idx] = tid
-            try:
-                add_task_to_story(story_id, tid)
-            except Exception:
-                pass
-
-        results.append({
-            "index": idx,
-            "description": desc,
-            "role": role,
-            "task_id": tid,
-            "success": result.get("success", False),
-            "error": result.get("error"),
-        })
-
-        if not result.get("success", False):
-            all_succeeded = False
-
-    return {
-        "story_id": story_id,
-        "title": story["title"],
-        "task_count": len(tasks),
-        "succeeded": sum(1 for r in results if r["success"]),
-        "failed": sum(1 for r in results if not r["success"]),
-        "all_succeeded": all_succeeded,
-        "task_results": results,
-    }
+            for t in (spec.get("tasks") or [])
+            if t.get("description")
+        ]
+        story = create_story(
+            title=spec.get("title", "Untitled story"),
+            description=spec.get("description", ""),
+            acceptance_criteria=spec.get("acceptance_criteria", []),
+            priority=spec.get("priority", "medium"),
+            project_id=project_id,
+            story_points=spec.get("story_points"),
+            planned_tasks=planned,
+        )
+        created_ids.append(story["id"])
+    return created_ids
 
 
 # ── Public API ──────────────────────────────────────────────────
@@ -476,10 +454,14 @@ def create_project_record(description: str, name: str) -> Dict[str, Any]:
         "description": description,
         "phase": PHASE_BA_ANALYSIS,
         "status": PROJECT_STATUS_ACTIVE,
+        "auto_execute": False,
         "refined_requirements": "",
         "architecture": "",
         "interface_spec": "",
         "stories": [],
+        "story_ids": [],
+        "sprint_ids": [],
+        "change_requests": [],
         "results": [],
         "created_at": _now(),
         "updated_at": _now(),
@@ -487,9 +469,19 @@ def create_project_record(description: str, name: str) -> Dict[str, Any]:
     save_json(project_dir / "state.json", project)
     return project
 
-def submit_project(description: str, name: Optional[str] = None, project_id: Optional[str] = None) -> Dict[str, Any]:
-    """Submit a high-level project for the full SDLC pipeline.
-    If project_id is provided, it resumes/continues an existing record.
+def submit_project(
+    description: str,
+    name: Optional[str] = None,
+    project_id: Optional[str] = None,
+    auto_execute: bool = False,
+) -> Dict[str, Any]:
+    """Submit a high-level project for the definition pipeline.
+
+    Ends with a defined backlog and a proposed sprint awaiting approval.
+    With auto_execute=True the proposed sprint starts immediately (the old
+    one-shot behavior). If project_id is provided, it resumes/continues an
+    existing record — re-analyzing the STORED description, not the argument,
+    unless a new non-empty description is passed explicitly.
     """
     ensure_initialized()
 
@@ -497,9 +489,15 @@ def submit_project(description: str, name: Optional[str] = None, project_id: Opt
         project = _load_project(project_id)
         if not project:
             return {"success": False, "error": f"Project {project_id} not found"}
+        # Resume analyzes the stored description by default (a re-run must
+        # not silently re-scope the project from a stale argument).
+        if not description:
+            description = project.get("description", "")
     else:
         proj_name = name or "Untitled Project"
         project = create_project_record(description, proj_name)
+        project["auto_execute"] = bool(auto_execute)
+        _save_project(project)
         project_id = project["id"]
 
     # ── Phase 1: BA Analysis ──
@@ -621,7 +619,7 @@ def resume_project(project_id: str, auto_answer: bool = False) -> Dict[str, Any]
     if project["phase"] == PHASE_BA_ANALYSIS:
         return _continue_to_architect(project)
     elif project["phase"] == PHASE_ARCHITECT_DESIGN:
-        return _continue_to_execution(project)
+        return _define_backlog(project)
     else:
         return {
             "success": False,
@@ -673,12 +671,18 @@ def _continue_to_architect(project: Dict[str, Any]) -> Dict[str, Any]:
 
     _save_project(project)
 
-    # Proceed to execution
-    return _continue_to_execution(project)
+    # Proceed to backlog definition (execution happens via sprints)
+    return _define_backlog(project)
 
 
-def _continue_to_execution(project: Dict[str, Any]) -> Dict[str, Any]:
-    """Transition from Architect phase to Execution phase."""
+def _define_backlog(project: Dict[str, Any]) -> Dict[str, Any]:
+    """Transition from Architect phase to a defined product backlog.
+
+    Persists estimated, project-scoped stories (with deferred task specs) and
+    proposes a first sprint from them. Nothing executes here — start_sprint()
+    is the PO's approval — unless the project was submitted with auto_execute,
+    in which case the proposed sprint starts immediately.
+    """
     project_id = project["id"]
     project["phase"] = PHASE_EXECUTION
     project["status"] = PROJECT_STATUS_ACTIVE
@@ -688,16 +692,15 @@ def _continue_to_execution(project: Dict[str, Any]) -> Dict[str, Any]:
         "tool:project",
         {"action": "phase_transition", "project_id": project_id, "phase": PHASE_EXECUTION},
     )
-    _broadcast_pipeline_status(project_id, PHASE_EXECUTION, "Creating stories and tasks...")
+    _broadcast_pipeline_status(project_id, PHASE_EXECUTION, "Defining backlog stories...")
 
-    # ── Phase 3: Create Stories & Tasks ──
-    stories = _create_stories_and_tasks(
+    story_specs = _create_stories_and_tasks(
         architecture=project["architecture"],
         refined_requirements=project["refined_requirements"],
         interface_spec=project["interface_spec"],
     )
 
-    if not stories:
+    if not story_specs:
         project["status"] = PROJECT_STATUS_FAILED
         project["updated_at"] = _now()
         _save_project(project)
@@ -708,61 +711,256 @@ def _continue_to_execution(project: Dict[str, Any]) -> Dict[str, Any]:
             "error": "Failed to create stories from architecture",
         }
 
-    # ── Execute each story ──
-    results = []
-    total_tasks = 0
-    total_succeeded = 0
-    total_failed = 0
+    _persist_interface_spec(project.get("interface_spec", ""), goal=project.get("name", project_id))
+    story_ids = _persist_backlog_stories(story_specs, project_id)
 
-    for idx, story in enumerate(stories):
-        _broadcast_pipeline_status(project_id, PHASE_EXECUTION, f"Executing story {idx + 1}/{len(stories)}: {story.get('title', 'Untitled')}...")
-        story_result = _execute_story_tasks(
-            story=story,
-            project_id=project_id,
-            interface_spec=project.get("interface_spec", ""),
-        )
-        results.append(story_result)
-        total_tasks += story_result["task_count"]
-        total_succeeded += story_result["succeeded"]
-        total_failed += story_result["failed"]
-
-    project["stories"] = [s.get("title", "") for s in stories]
-    project["results"] = results
-    project["phase"] = PHASE_COMPLETE
-    project["status"] = PROJECT_STATUS_COMPLETED
+    project["story_ids"] = project.get("story_ids", []) + story_ids
+    project["stories"] = project.get("stories", []) + [s.get("title", "") for s in story_specs]
+    project["phase"] = PHASE_BACKLOG_READY
     project["updated_at"] = _now()
     _save_project(project)
-    _broadcast_pipeline_status(project_id, PHASE_COMPLETE, f"Pipeline complete. {total_succeeded}/{total_tasks} tasks succeeded.")
 
     append_event(
         "tool:project",
-        {
-            "action": "project_complete",
-            "project_id": project_id,
-            "stories": len(stories),
-            "total_tasks": total_tasks,
-            "succeeded": total_succeeded,
-            "failed": total_failed,
-        },
+        {"action": "backlog_defined", "project_id": project_id, "stories": len(story_ids)},
     )
+
+    # Propose the first sprint from the fresh backlog.
+    from tools.sprint_tool import plan_sprint, start_sprint
+    plan = plan_sprint(project_id)
+    sprint_id = plan.get("sprint", {}).get("id") if plan.get("success") else None
+    if sprint_id:
+        project["sprint_ids"] = project.get("sprint_ids", []) + [sprint_id]
+        project["updated_at"] = _now()
+        _save_project(project)
+
+    execution = None
+    if sprint_id and project.get("auto_execute"):
+        _broadcast_pipeline_status(project_id, PHASE_EXECUTION, f"Auto-executing {sprint_id}...")
+        execution = start_sprint(sprint_id)
+        summary = None
+        if execution.get("success"):
+            results = execution.get("results", [])
+            summary = {
+                "sprint_id": sprint_id,
+                "stories": len(results),
+                "stories_done": sum(1 for r in results if r.get("all_succeeded")),
+            }
+            project["results"] = project.get("results", []) + [summary]
+            project["updated_at"] = _now()
+            _save_project(project)
+        _broadcast_pipeline_status(
+            project_id, PHASE_BACKLOG_READY,
+            f"{sprint_id} executed; awaiting sprint review." if execution.get("success")
+            else f"{sprint_id} execution failed: {execution.get('error')}",
+        )
+    else:
+        _broadcast_pipeline_status(
+            project_id, PHASE_BACKLOG_READY,
+            f"Backlog ready ({len(story_ids)} stories). "
+            + (f"Sprint {sprint_id} proposed — start it to begin work." if sprint_id
+               else "No sprint could be proposed."),
+        )
 
     return {
         "success": True,
         "project_id": project_id,
-        "status": PROJECT_STATUS_COMPLETED,
-        "phase": PHASE_COMPLETE,
+        "status": project["status"],
+        "phase": PHASE_BACKLOG_READY,
+        "story_ids": story_ids,
+        "proposed_sprint_id": sprint_id,
+        "auto_executed": bool(execution),
         "summary": {
-            "stories": len(stories),
-            "total_tasks": total_tasks,
-            "succeeded": total_succeeded,
-            "failed": total_failed,
+            "stories": len(story_ids),
+            "sprint_id": sprint_id,
         },
-        "story_results": results,
+    }
+
+
+# ── Change Requests (delta modifications) ───────────────────────
+
+CHANGE_REQUEST_PROMPT = """You are a Business Analyst handling a change request for an EXISTING project.
+
+Existing refined requirements:
+{requirements}
+
+Existing architecture (summary):
+{architecture}
+
+Story ledger — what the team has already defined and built:
+{ledger}
+
+Previously answered clarifications:
+{clarifications}
+
+Change request from the product owner:
+{change}
+
+Produce ONLY the NEW work needed: user stories that implement the change,
+building on — never re-implementing — what already exists in the ledger.
+If the change alters existing behavior, write a story that amends it and set
+"supersedes" to the existing story's ID.
+
+Return a JSON object with exactly these keys:
+- "impact_summary": One paragraph on how this change affects the existing system.
+- "stories": An array of story objects, each with keys: title, description,
+  acceptance_criteria (array), priority ("high"|"medium"|"low"), story_points
+  (1, 2, 3, 5, or 8), supersedes (an existing STORY-id or null), tasks (array
+  of objects with keys: description, role ("developer"|"qa"|"researcher"|
+  "architect"), dependencies (array of 0-based integer indices within THIS
+  story)).
+- "ambiguities": An array of objects with keys "question", "context",
+  "reason" for anything needing human clarification; [] if none.
+
+Return ONLY valid JSON, nothing else."""
+
+
+def _story_ledger(project: Dict[str, Any]) -> str:
+    """Human-readable ledger of the project's stories for BA context."""
+    from tools.story_tool import get_story, derive_story_status
+
+    lines = []
+    for sid in project.get("story_ids", []):
+        story = get_story(sid)
+        if not story:
+            continue
+        line = (
+            f"- {sid} [{derive_story_status(sid)}] "
+            f"({story.get('story_points') or '?'} pts, {story.get('priority', 'medium')}): "
+            f"{story.get('title', '')}"
+        )
+        if story.get("po_acceptance"):
+            line += f" | PO: {story['po_acceptance']}"
+        lines.append(line)
+    return "\n".join(lines) or "No stories defined yet."
+
+
+def _answered_clarifications(project_id: str) -> str:
+    try:
+        from tools.clarification_tool import list_requests
+        answered = list_requests(project_id=project_id, status="answered")
+    except Exception:
+        answered = []
+    lines = [f"- Q: {r.get('question', '')}\n  A: {r.get('answer', '')}" for r in answered]
+    return "\n".join(lines) or "None."
+
+
+def submit_change_request(project_id: str, change_description: str) -> Dict[str, Any]:
+    """Add a modification to an existing project as a backlog delta.
+
+    Unlike re-running the pipeline, the BA sees the project's existing
+    requirements, architecture, story ledger, and answered clarifications, and
+    produces only the NEW stories the change needs — appended to the backlog,
+    never overwriting prior work. Ambiguities pause the change for human
+    answers (re-submit after answering; the answers are fed back in).
+    """
+    ensure_initialized()
+    project = _load_project(project_id)
+    if not project:
+        return {"success": False, "error": f"Project {project_id} not found"}
+    if not project.get("refined_requirements") or not project.get("architecture"):
+        return {
+            "success": False,
+            "error": "Project has no defined requirements/architecture yet — "
+                     "finish the initial definition pipeline first.",
+        }
+
+    cr_id = f"CR-{uuid4().hex[:6]}"
+    prompt = CHANGE_REQUEST_PROMPT.format(
+        requirements=project.get("refined_requirements", "")[:6000],
+        architecture=project.get("architecture", "")[:4000],
+        ledger=_story_ledger(project),
+        clarifications=_answered_clarifications(project_id),
+        change=change_description,
+    )
+    result = query_llm(prompt, temperature=0.3)
+    if not result.get("success") or not result.get("content"):
+        return {"success": False, "error": result.get("error", "LLM query failed")}
+
+    parsed = _extract_json(result["content"].strip())
+    if not isinstance(parsed, dict):
+        return {"success": False, "error": "Failed to parse change analysis JSON"}
+
+    ambiguities = parsed.get("ambiguities") or []
+    record = {
+        "id": cr_id,
+        "description": change_description,
+        "impact_summary": parsed.get("impact_summary", ""),
+        "status": "awaiting_clarification" if ambiguities else "accepted_into_backlog",
+        "story_ids": [],
+        "created_at": _now(),
+    }
+
+    if ambiguities:
+        from tools.clarification_tool import create_request
+        clarification_ids = []
+        for amb in ambiguities:
+            req = create_request(
+                project_id=project_id,
+                question=amb.get("question", ""),
+                context=amb.get("context", amb.get("reason", "")),
+                phase="change_request",
+                asked_via=["dashboard"],
+            )
+            clarification_ids.append(req["id"])
+        project["change_requests"] = project.get("change_requests", []) + [record]
+        project["updated_at"] = _now()
+        _save_project(project)
+        append_event(
+            "tool:project",
+            {"action": "change_request", "project_id": project_id, "cr_id": cr_id,
+             "status": "awaiting_clarification", "ambiguities": len(ambiguities)},
+        )
+        return {
+            "success": True,
+            "project_id": project_id,
+            "change_request_id": cr_id,
+            "status": "awaiting_clarification",
+            "clarification_ids": clarification_ids,
+            "message": f"{len(ambiguities)} clarification(s) needed — answer them and re-submit the change.",
+        }
+
+    story_specs = parsed.get("stories") or []
+    if not story_specs:
+        return {"success": False, "error": "Change analysis produced no stories"}
+
+    story_ids = _persist_backlog_stories(story_specs, project_id)
+    # Preserve supersedes links on the new records.
+    from tools.story_tool import update_story_fields
+    for spec, sid in zip(story_specs, story_ids):
+        if spec.get("supersedes"):
+            update_story_fields(sid, {"supersedes": spec["supersedes"]})
+
+    record["story_ids"] = story_ids
+    project["change_requests"] = project.get("change_requests", []) + [record]
+    project["story_ids"] = project.get("story_ids", []) + story_ids
+    project["stories"] = project.get("stories", []) + [s.get("title", "") for s in story_specs]
+    if project.get("phase") in (PHASE_COMPLETE,):
+        project["phase"] = PHASE_BACKLOG_READY
+    project["updated_at"] = _now()
+    _save_project(project)
+
+    append_event(
+        "tool:project",
+        {"action": "change_request", "project_id": project_id, "cr_id": cr_id,
+         "status": "accepted_into_backlog", "stories": len(story_ids)},
+    )
+    _broadcast_pipeline_status(
+        project_id, PHASE_BACKLOG_READY,
+        f"Change request {cr_id}: {len(story_ids)} new stories added to the backlog.",
+    )
+    return {
+        "success": True,
+        "project_id": project_id,
+        "change_request_id": cr_id,
+        "status": "accepted_into_backlog",
+        "story_ids": story_ids,
+        "impact_summary": record["impact_summary"],
     }
 
 
 def get_project_status(project_id: str) -> Optional[Dict[str, Any]]:
-    """Get the current status of a project."""
+    """Get the current status of a project, including backlog and sprints."""
     project = _load_project(project_id)
     if not project:
         return None
@@ -771,6 +969,31 @@ def get_project_status(project_id: str) -> Optional[Dict[str, Any]]:
 
     clarification_counts = count_by_status(project_id)
     pending_clarifications = list_requests(project_id=project_id, status="pending")
+
+    results = project.get("results")
+    if isinstance(results, list) and results and isinstance(results[-1], dict):
+        summary = results[-1]
+    elif isinstance(results, dict):
+        summary = results
+    else:
+        summary = {}
+
+    try:
+        from tools.story_tool import list_backlog
+        open_backlog = len(list_backlog(project_id))
+    except Exception:
+        open_backlog = None
+
+    sprints = []
+    try:
+        from tools.sprint_tool import list_sprints
+        sprints = [
+            {"id": s["id"], "status": s.get("status"), "goal": s.get("goal"),
+             "velocity_points": s.get("velocity_points")}
+            for s in list_sprints(project_id)
+        ]
+    except Exception:
+        pass
 
     return {
         "id": project["id"],
@@ -786,10 +1009,16 @@ def get_project_status(project_id: str) -> Optional[Dict[str, Any]]:
                 for r in pending_clarifications
             ],
         },
-        "summary": {
-            k: v for k, v in project.get("results", {}).items()
-            if k in ("stories", "total_tasks", "succeeded", "failed")
-        } if isinstance(project.get("results"), dict) else project.get("results")[-1]["summary"] if project.get("results") and isinstance(project.get("results"), list) else {},
+        "summary": summary,
+        "backlog": {
+            "open": open_backlog,
+            "total_stories": len(project.get("story_ids", [])),
+        },
+        "sprints": sprints,
+        "change_requests": [
+            {"id": c.get("id"), "status": c.get("status")}
+            for c in project.get("change_requests", [])
+        ],
         "created_at": project.get("created_at", ""),
         "updated_at": project.get("updated_at", ""),
     }

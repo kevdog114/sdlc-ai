@@ -46,8 +46,8 @@ def run_turbo_pipeline(description: str, name: str):
     log("INFO", f"Description: {description}")
     print("-" * 60)
 
-    # Phase 1: Initial Submission
-    result = submit_project(description, name=name)
+    # Phase 1: Initial Submission (turbo = auto-execute the proposed sprint)
+    result = submit_project(description, name=name, auto_execute=True)
     if not result.get("success"):
         log("ERROR", f"Initial submission failed: {result.get('error')}")
         return

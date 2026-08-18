@@ -494,10 +494,12 @@ async def submit_project(request: Request):
         if not description:
             return {"success": False, "error": "Missing project description"}
 
-        from project_tool import create_project_record, submit_project as sp
+        from project_tool import create_project_record, submit_project as sp, _save_project
 
         # 1. Create the record immediately so we have an ID to return
         project = create_project_record(description, name)
+        project["auto_execute"] = bool(body.get("auto_execute", False))
+        _save_project(project)
         project_id = project["id"]
         print(f"[DEBUG] Created project {project_id}")
 
@@ -578,7 +580,13 @@ async def get_project(project_id: str):
 
 @app.post("/api/projects/{project_id}/command")
 async def project_command(project_id: str, request: Request):
-    """Send a command/prompt to an existing project for BA analysis."""
+    """Send a modification/prompt to an existing project.
+
+    A project that already has requirements + architecture gets a DELTA
+    change request (new stories appended to its backlog); a project still in
+    definition gets a fresh BA run. The old behavior — re-running the whole
+    pipeline on the command text and overwriting the project — is gone.
+    """
     try:
         body = await request.json()
         command = body.get("command", "")
@@ -589,24 +597,148 @@ async def project_command(project_id: str, request: Request):
         if not project:
             return {"success": False, "error": f"Project {project_id} not found"}
 
-        project["status"] = project_tool.PROJECT_STATUS_ACTIVE
-        project["phase"] = project_tool.PHASE_BA_ANALYSIS
-        project_tool._save_project(project)
+        is_defined = bool(project.get("refined_requirements")) and bool(project.get("architecture"))
 
-        def run_ba():
+        def run_change():
             try:
-                result = project_tool.submit_project(command, project_id=project_id)
+                if is_defined:
+                    result = project_tool.submit_change_request(project_id, command)
+                else:
+                    result = project_tool.submit_project(command, project_id=project_id)
                 _broadcast({"type": "project_update", "data": {"project_id": project_id, "status": result.get("status", "processing")}})
                 _broadcast({"type": "registry_update", "data": {}})
             except Exception as e:
                 _broadcast({"type": "project_update", "data": {"project_id": project_id, "error": str(e)}})
 
-        _run_pipeline_in_thread(run_ba)
+        _run_pipeline_in_thread(run_change)
 
-        _broadcast({"type": "project_update", "data": {"project_id": project_id, "status": "ba_analysis_started", "command": command}})
-        return {"success": True, "project_id": project_id, "status": "ba_analysis_started", "message": "Command sent for BA analysis."}
+        mode = "change_request_started" if is_defined else "ba_analysis_started"
+        _broadcast({"type": "project_update", "data": {"project_id": project_id, "status": mode, "command": command}})
+        return {"success": True, "project_id": project_id, "status": mode,
+                "message": "Change request analysis started." if is_defined else "Command sent for BA analysis."}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+# ── Backlog & Sprint Routes ─────────────────────────────────────
+
+@app.get("/api/projects/{project_id}/backlog")
+async def project_backlog(project_id: str):
+    """The project's open product backlog (not in a sprint, not accepted)."""
+    try:
+        from tools.story_tool import list_backlog, derive_story_status
+        stories = list_backlog(project_id)
+        return [
+            {**s, "derived_status": derive_story_status(s["id"])}
+            for s in stories
+        ]
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/api/sprints/plan")
+async def plan_sprint_route(request: Request):
+    """Propose a sprint from a project's backlog (nothing executes yet)."""
+    try:
+        body = await request.json()
+        project_id = body.get("project_id")
+        if not project_id:
+            return {"success": False, "error": "Missing project_id"}
+        from tools.sprint_tool import plan_sprint
+        result = plan_sprint(
+            project_id,
+            capacity_points=body.get("capacity_points"),
+            goal=body.get("goal"),
+        )
+        if result.get("success"):
+            _broadcast({"type": "sprint_update", "data": result["sprint"]})
+        return result
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/sprints/{sprint_id}/start")
+async def start_sprint_route(sprint_id: str):
+    """PO approval: activate the sprint and execute it in the background."""
+    try:
+        from tools.sprint_tool import get_sprint
+        sprint = get_sprint(sprint_id)
+        if not sprint:
+            return {"success": False, "error": f"Sprint {sprint_id} not found"}
+        if sprint["status"] != "planning":
+            return {"success": False, "error": f"Sprint is '{sprint['status']}', expected planning"}
+
+        def run_sprint():
+            try:
+                from tools.sprint_tool import start_sprint
+                result = start_sprint(sprint_id)
+                _broadcast({"type": "sprint_update", "data": result.get("sprint", {"id": sprint_id})})
+                _broadcast({"type": "registry_update", "data": {}})
+            except Exception as e:
+                _broadcast({"type": "sprint_update", "data": {"id": sprint_id, "error": str(e)}})
+
+        _run_pipeline_in_thread(run_sprint)
+        _broadcast({"type": "sprint_update", "data": {"id": sprint_id, "status": "starting"}})
+        return {"success": True, "sprint_id": sprint_id, "message": "Sprint started; executing in background."}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/sprints")
+async def sprints_route(project_id: str = ""):
+    try:
+        from tools.sprint_tool import list_sprints
+        return list_sprints(project_id or None)
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/sprints/{sprint_id}")
+async def sprint_detail_route(sprint_id: str):
+    """Sprint detail with the per-story review summary for PO acceptance."""
+    try:
+        from tools.sprint_tool import review_sprint
+        return review_sprint(sprint_id)
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/api/stories/{story_id}/accept")
+async def accept_story_route(story_id: str, request: Request):
+    """PO acceptance decision. Rejections return the story to the backlog."""
+    try:
+        body = await request.json()
+        if "accepted" not in body:
+            return {"success": False, "error": "Missing 'accepted' (true/false)"}
+        from tools.sprint_tool import accept_story
+        result = accept_story(story_id, bool(body["accepted"]), notes=body.get("notes", ""))
+        if result.get("success"):
+            _broadcast({"type": "story_update", "data": result["story"]})
+        return result
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/sprints/{sprint_id}/complete")
+async def complete_sprint_route(sprint_id: str):
+    """Close a reviewed sprint: velocity from accepted points + retrospective."""
+    try:
+        from tools.sprint_tool import complete_sprint
+        result = complete_sprint(sprint_id)
+        if result.get("success"):
+            _broadcast({"type": "sprint_update", "data": result["sprint"]})
+        return result
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/projects/{project_id}/velocity")
+async def velocity_route(project_id: str, window: int = 3):
+    try:
+        from tools.sprint_tool import get_velocity
+        return get_velocity(project_id, window=window)
+    except Exception as e:
+        return {"error": str(e)}
 
 
 # --- Core Routes ---
