@@ -118,10 +118,10 @@
         <header class="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-2 fade-in">
           <div class="flex items-center gap-4">
             <button @click="viewMode = 'PROJECT_LIST'" class="text-radar-muted hover:text-radar-accent transition-colors flex items-center gap-1 text-sm">
-              <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" /></svg>Back>>>>> to Projects
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" /></svg>Back to Projects
             </button><div class="h-6 w-[1px] bg-radar-border hidden md:block"></div><h2 class="text-xl font-bold">{{ activeProject?.name }}</h2></div><nav class="flex bg-radar-panel border border-radar-border rounded-lg p-1">
             <button 
-              v-for="tab in ['Prompt', 'Board', 'Clarifications']" 
+              v-for="tab in ['Prompt', 'Board', 'Sprints', 'Clarifications']"
               :key="tab"
               @click="activeTab = tab"
               :class="activeTab === tab ? 'bg-radar-accent text-black shadow-lg' : 'text-radar-muted hover:text-radar-text'"
@@ -205,13 +205,91 @@
                     />
                     <button @click="answerClarification(clr.id)" class="px-4 py-2 bg-radar-success/20 text-radar-success text-xs font-bold rounded hover:bg-radar-success/30 transition-colors">
                       Answer
-                    </button></div></div></div></section></div><!-- Sidebar (3 cols) -->
+                    </button></div></div></div></section><!-- TAB: SPRINTS -->
+            <section v-else-if="activeTab === 'Sprints'" class="space-y-4 fade-in">
+              <!-- Backlog -->
+              <div class="bg-radar-panel border border-radar-border rounded-lg p-5">
+                <div class="flex items-center justify-between mb-3">
+                  <h3 class="text-sm font-semibold text-radar-dim uppercase tracking-widest">Product Backlog</h3>
+                  <div class="flex items-center gap-3">
+                    <span v-if="velocityInfo && velocityInfo.velocity !== null" class="text-[10px] text-radar-dim">Velocity: <span class="text-radar-accent font-bold">{{ velocityInfo.velocity }}</span> pts/sprint</span>
+                    <button @click="planSprint" :disabled="sprintBusy || backlogStories.length === 0" class="px-4 py-1.5 bg-radar-accent text-black text-xs font-bold rounded hover:bg-radar-accent/80 transition-colors disabled:opacity-40">Plan Sprint</button>
+                  </div>
+                </div>
+                <div v-if="backlogStories.length === 0" class="text-center py-6 text-radar-dim italic text-sm">Backlog is empty.</div>
+                <div v-else class="space-y-2">
+                  <div v-for="s in backlogStories" :key="s.id" class="bg-radar-bg border border-radar-border rounded p-3 flex items-center justify-between gap-3">
+                    <div class="min-w-0">
+                      <div class="flex items-center gap-2 mb-1">
+                        <span class="text-[10px] font-bold text-radar-accent">{{ s.id }}</span>
+                        <span :class="priorityBadge(s.priority)" class="text-[9px] px-1.5 py-0.5 rounded uppercase font-bold">{{ s.priority }}</span>
+                        <span v-if="s.po_acceptance === 'rejected'" class="text-[9px] px-1.5 py-0.5 rounded bg-radar-danger/20 text-radar-danger font-bold uppercase">PO Rejected</span>
+                      </div>
+                      <div class="text-xs text-radar-text truncate">{{ s.title }}</div>
+                      <div v-if="s.po_notes" class="text-[10px] text-radar-dim italic mt-1 truncate">PO: {{ s.po_notes }}</div>
+                    </div>
+                    <span class="text-xs font-bold text-radar-muted shrink-0">{{ s.story_points || '?' }} pts</span>
+                  </div>
+                </div>
+              </div>
+              <!-- Sprints -->
+              <div class="bg-radar-panel border border-radar-border rounded-lg p-5">
+                <h3 class="text-sm font-semibold text-radar-dim uppercase tracking-widest mb-3">Sprints</h3>
+                <div v-if="projectSprints.length === 0" class="text-center py-6 text-radar-dim italic text-sm">No sprints yet — plan one from the backlog.</div>
+                <div v-else class="space-y-3">
+                  <div v-for="sp in projectSprints.slice().reverse()" :key="sp.id" class="bg-radar-bg border rounded-lg p-4" :class="selectedSprintId === sp.id ? 'border-radar-accent' : 'border-radar-border'">
+                    <div class="flex items-center justify-between gap-3 flex-wrap">
+                      <div class="min-w-0 cursor-pointer" @click="selectSprint(sp.id)">
+                        <div class="flex items-center gap-2 mb-1">
+                          <span class="text-xs font-bold text-radar-accent">{{ sp.id }}</span>
+                          <span class="text-[9px] px-1.5 py-0.5 rounded uppercase font-bold" :class="sprintStatusBadge(sp.status)">{{ sp.status }}</span>
+                          <span class="text-[10px] text-radar-dim">{{ sp.committed_points }} pts committed<template v-if="sp.velocity_points !== null"> · {{ sp.velocity_points }} accepted</template></span>
+                        </div>
+                        <div class="text-xs text-radar-muted truncate">{{ sp.goal }}</div>
+                      </div>
+                      <div class="flex gap-2 shrink-0">
+                        <button v-if="sp.status === 'planning'" @click="startSprint(sp.id)" :disabled="sprintBusy" class="px-3 py-1.5 bg-radar-success/20 text-radar-success text-[10px] font-bold rounded hover:bg-radar-success/30 disabled:opacity-40">Start Sprint</button>
+                        <button v-if="sp.status === 'review'" @click="completeSprint(sp.id)" :disabled="sprintBusy" class="px-3 py-1.5 bg-radar-accent/20 text-radar-accent text-[10px] font-bold rounded hover:bg-radar-accent/30 disabled:opacity-40">Complete + Retro</button>
+                        <button @click="selectSprint(sp.id)" class="px-3 py-1.5 bg-radar-panel border border-radar-border text-[10px] rounded text-radar-muted hover:text-radar-text">Review</button>
+                      </div>
+                    </div>
+                    <!-- Sprint review detail -->
+                    <div v-if="selectedSprintId === sp.id && sprintDetail" class="mt-4 border-t border-radar-border/50 pt-3 space-y-2">
+                      <div v-for="st in sprintDetail.stories" :key="st.story_id" class="flex items-center justify-between gap-3 bg-radar-panel/60 rounded p-2.5">
+                        <div class="min-w-0">
+                          <div class="flex items-center gap-2">
+                            <span class="text-[10px] font-bold text-radar-accent">{{ st.story_id }}</span>
+                            <span class="text-[9px] uppercase" :class="st.derived_status === 'done' ? 'text-radar-success' : 'text-radar-warning'">{{ st.derived_status }}</span>
+                            <span v-if="st.po_acceptance" class="text-[9px] px-1.5 py-0.5 rounded uppercase font-bold" :class="st.po_acceptance === 'accepted' ? 'bg-radar-success/20 text-radar-success' : 'bg-radar-danger/20 text-radar-danger'">{{ st.po_acceptance }}</span>
+                          </div>
+                          <div class="text-xs text-radar-text truncate">{{ st.title }} <span class="text-radar-dim">({{ st.points || '?' }} pts)</span></div>
+                        </div>
+                        <div v-if="sp.status === 'review' && !st.po_acceptance" class="flex items-center gap-1.5 shrink-0">
+                          <input v-model="acceptNotes[st.story_id]" placeholder="notes…" class="w-32 bg-radar-bg border border-radar-border rounded px-2 py-1 text-[10px] focus:outline-none focus:border-radar-accent" />
+                          <button @click="decideStory(st.story_id, true)" class="px-2.5 py-1 bg-radar-success/20 text-radar-success text-[10px] font-bold rounded hover:bg-radar-success/30">Accept</button>
+                          <button @click="decideStory(st.story_id, false)" class="px-2.5 py-1 bg-radar-danger/20 text-radar-danger text-[10px] font-bold rounded hover:bg-radar-danger/30">Reject</button>
+                        </div>
+                      </div>
+                      <!-- Retrospective -->
+                      <div v-if="sprintRetro(sp)" class="bg-radar-panel/60 rounded p-3 mt-2">
+                        <div class="text-[10px] font-bold uppercase tracking-widest text-radar-dim mb-2">Retrospective Proposals</div>
+                        <div v-for="(p, i) in sprintRetro(sp).proposals" :key="i" class="text-[11px] text-radar-muted mb-1.5">
+                          <span class="text-radar-accent font-bold">[{{ p.area }}]</span> {{ p.proposal }}
+                          <span class="text-radar-dim italic"> → {{ p.expected_effect }}</span>
+                        </div>
+                        <div v-if="sprintRetro(sp).proposals.length === 0" class="text-[11px] text-radar-dim italic">No proposals recorded.</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section></div><!-- Sidebar (3 cols) -->
           <aside class="col-span-12 lg:col-span-3 space-y-4 h-full">
              <!-- Clarifications Mini-Panel (only if active in workspace or global) -->
              <div v-if="filteredClarifications.length > 0" class="bg-radar-panel border border-radar-border rounded-lg overflow-hidden fade-in">
                 <div class="px-4 py-2.5 border-b border-radar-border bg-radar-panel/50 flex items-center justify-between">
                    <h3 class="text-[10px] font-bold uppercase tracking-widest text-radar-warning flex items-center gap-2">
-                     <span class="w-1.5 h-1.5 rounded-full bg-radar-warning animate-pulse"></span>Attention>>>>> Required
+                     <span class="w-1.5 h-1.5 rounded-full bg-radar-warning animate-pulse"></span>Attention Required
                    </h3></div><div class="max-h-48 overflow-y-auto p-3 space-y-2">
                   <div v-for="clr in filteredClarifications.slice(0, 5)" :key="clr.id" class="text-[11px] bg-radar-bg border border-radar-border p-2 rounded cursor-pointer hover:border-radar-accent transition-colors" @click="activeTab = 'Clarifications'">
                     <div class="font-bold text-radar-accent mb-0.5">#{{ clr.id }}</div><div class="text-radar-muted line-clamp-2">{{ clr.question }}</div></div></div></div><!-- Thought Stream -->
@@ -759,10 +837,105 @@
         const scrollToBottom = () => { if (streamContainer.value) streamContainer.value.scrollTop = streamContainer.value.scrollHeight; };
         const updateClock = () => { clock.value = new Date().toLocaleTimeString('en-US', { hour12: false }); };
 
+        // --- Sprints & Backlog ---
+        const backlogStories = ref([]);
+        const projectSprints = ref([]);
+        const sprintDetail = ref(null);
+        const selectedSprintId = ref(null);
+        const acceptNotes = ref({});
+        const sprintBusy = ref(false);
+        const velocityInfo = ref(null);
+
+        const sprintStatusBadge = (status) => ({
+          planning: 'bg-radar-warning/20 text-radar-warning',
+          active: 'bg-radar-accent/20 text-radar-accent',
+          review: 'bg-purple-400/20 text-purple-400',
+          complete: 'bg-radar-success/20 text-radar-success',
+          cancelled: 'bg-radar-panel text-radar-dim',
+        }[status] || 'bg-radar-panel text-radar-dim');
+
+        const sprintRetro = (sp) => sp && sp.retrospective ? sp.retrospective : null;
+
+        const loadSprintData = async () => {
+          if (!activeProjectId.value) return;
+          try {
+            const [backlogRes, sprintsRes, velRes] = await Promise.all([
+              fetch(`/api/projects/${activeProjectId.value}/backlog`),
+              fetch(`/api/sprints?project_id=${activeProjectId.value}`),
+              fetch(`/api/projects/${activeProjectId.value}/velocity`),
+            ]);
+            const backlog = await backlogRes.json();
+            const sprints = await sprintsRes.json();
+            const vel = await velRes.json();
+            backlogStories.value = Array.isArray(backlog) ? backlog : [];
+            projectSprints.value = Array.isArray(sprints) ? sprints : [];
+            velocityInfo.value = vel && !vel.error ? vel : null;
+            if (selectedSprintId.value) await loadSprintDetail(selectedSprintId.value);
+          } catch (e) { /* server unreachable; keep last state */ }
+        };
+
+        const loadSprintDetail = async (sprintId) => {
+          try {
+            const res = await fetch(`/api/sprints/${sprintId}`);
+            const data = await res.json();
+            sprintDetail.value = data && data.success ? data : null;
+          } catch (e) { sprintDetail.value = null; }
+        };
+
+        const selectSprint = async (sprintId) => {
+          selectedSprintId.value = selectedSprintId.value === sprintId ? null : sprintId;
+          if (selectedSprintId.value) await loadSprintDetail(sprintId);
+        };
+
+        const planSprint = async () => {
+          sprintBusy.value = true;
+          try {
+            await fetch('/api/sprints/plan', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ project_id: activeProjectId.value }),
+            });
+            await loadSprintData();
+          } finally { sprintBusy.value = false; }
+        };
+
+        const startSprint = async (sprintId) => {
+          sprintBusy.value = true;
+          try {
+            await fetch(`/api/sprints/${sprintId}/start`, { method: 'POST' });
+            await loadSprintData();
+          } finally { sprintBusy.value = false; }
+        };
+
+        const completeSprint = async (sprintId) => {
+          sprintBusy.value = true;
+          try {
+            await fetch(`/api/sprints/${sprintId}/complete`, { method: 'POST' });
+            await loadSprintData();
+          } finally { sprintBusy.value = false; }
+        };
+
+        const decideStory = async (storyId, accepted) => {
+          try {
+            await fetch(`/api/stories/${storyId}/accept`, {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ accepted, notes: acceptNotes.value[storyId] || '' }),
+            });
+            delete acceptNotes.value[storyId];
+            await loadSprintData();
+          } catch (e) { /* keep UI state */ }
+        };
+
+        watch([() => activeTab.value, () => activeProjectId.value], ([tab]) => {
+          if (tab === 'Sprints') loadSprintData();
+        });
+
         onMounted(() => {
           connectWS();
           setInterval(updateClock, 1000);
-          setInterval(async () => { await Promise.all([fetchProjects(), fetchClarifications()]); }, 5000);
+          setInterval(async () => {
+            await Promise.all([fetchProjects(), fetchClarifications()]);
+            if (activeTab.value === 'Sprints') await loadSprintData();
+          }, 5000);
           updateClock();
         });
 
@@ -782,7 +955,10 @@
            newProjectName, newProjectDescription, submitting, submitResult,
            submitNewProject, selectProject, clarificationAnswers, answerClarification,
             promptInput, sendPrompt, projectStatusBadge, storyColumnItems, activePipelineStatus,
-            selectedStory, openStoryDetail, closeStoryDetail, getStoryTasks, formatDate
+            selectedStory, openStoryDetail, closeStoryDetail, getStoryTasks, formatDate,
+            backlogStories, projectSprints, sprintDetail, selectedSprintId, acceptNotes,
+            sprintBusy, velocityInfo, sprintStatusBadge, sprintRetro, loadSprintData,
+            selectSprint, planSprint, startSprint, completeSprint, decideStory
          };
       }
     }).mount('#app');

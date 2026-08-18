@@ -1,5 +1,13 @@
 # Scrum Process Specification (target operating model)
 
+> **Implementation status (2026-08-18):** the core loop is now implemented —
+> project-scoped backlog with story points, sprint plan/start/review/complete
+> (`tools/sprint_tool.py`), PO acceptance with rejection-to-backlog, velocity
+> from accepted points, and the event-log retrospective (proposals recorded,
+> not self-applied). Still open: timebox/budget enforcement (§3), the
+> scheduled standup report (§4.2), the autonomy-dial config surface (§8), and
+> continuous refinement (§4.5).
+
 How SDLC-AI should operate as a scrum *team* rather than a one-shot pipeline. This layers on top of
 the existing workflow — it reuses the stories, the kanban board, the stage gates, the clarification
 loop, and the event log that are already implemented — and adds the cadence and feedback loops that

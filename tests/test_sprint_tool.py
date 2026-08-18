@@ -351,3 +351,52 @@ class TestChangeRequests:
         project = create_project_record("Bare", "Bare")
         result = submit_change_request(project["id"], "Change something")
         assert result["success"] is False
+
+
+class TestSprintEndpoints:
+    """The pulse-server API routes over the sprint engine."""
+
+    @pytest.fixture()
+    def client(self):
+        from starlette.testclient import TestClient
+        from tools.pulse_server import app
+        return TestClient(app)
+
+    def test_backlog_plan_accept_flow(self, client):
+        _story("API story", points=5, priority="high")
+
+        backlog = client.get("/api/projects/proj-1/backlog").json()
+        assert isinstance(backlog, list)
+        assert backlog[0]["title"] == "API story"
+
+        with patch("tools.sprint_tool.query_llm", return_value=GOAL_LLM):
+            planned = client.post(
+                "/api/sprints/plan", json={"project_id": "proj-1"}
+            ).json()
+        assert planned["success"] is True
+        sprint_id = planned["sprint"]["id"]
+        assert planned["sprint"]["status"] == "planning"
+
+        sprints = client.get("/api/sprints", params={"project_id": "proj-1"}).json()
+        assert [s["id"] for s in sprints] == [sprint_id]
+
+        detail = client.get(f"/api/sprints/{sprint_id}").json()
+        assert detail["success"] is True
+        assert detail["stories"][0]["title"] == "API story"
+
+        story_id = detail["stories"][0]["story_id"]
+        decision = client.post(
+            f"/api/stories/{story_id}/accept",
+            json={"accepted": False, "notes": "needs polish"},
+        ).json()
+        assert decision["success"] is True
+        assert decision["story"]["po_acceptance"] == "rejected"
+
+        # Rejected story is back on the backlog with the notes.
+        backlog = client.get("/api/projects/proj-1/backlog").json()
+        assert backlog[0]["po_notes"] == "needs polish"
+
+    def test_velocity_endpoint(self, client):
+        result = client.get("/api/projects/proj-1/velocity").json()
+        assert result["sprints_counted"] == 0
+        assert result["velocity"] is None

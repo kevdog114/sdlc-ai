@@ -1,5 +1,13 @@
 # Work Intake & Story Tracking
 
+> **Implementation status (2026-08-18):** the gaps below are now closed —
+> define is separated from execute (submitting ends at a persisted,
+> project-scoped backlog + proposed sprint; sprints execute), stories carry
+> `project_id`/points/planned_tasks, and modifications flow through
+> `submit_change_request` as backlog deltas with the story ledger as BA
+> context. This document is kept as the analysis of the pre-change design
+> (`7ee5435`); §4 describes what was built.
+
 How you give the team work (new projects and modifications), whether that intake is sufficient, and
 how well the team tracks stories — both the already-implemented ones and the defined-but-not-yet-
 worked backlog. Companion to [REVIEW.md](REVIEW.md); references are to `7ee5435`.
