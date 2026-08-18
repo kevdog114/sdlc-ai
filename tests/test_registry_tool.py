@@ -121,7 +121,7 @@ class TestCreateNewTask:
             with patch('tools.registry_tool.append_event'):
                 result = create_new_task("new task", agent="test-agent")
             assert result == mock_task
-            mock_add.assert_called_once_with(description="new task", agent="test-agent", story_id=None, interface_spec_id=None)
+            mock_add.assert_called_once_with(description="new task", agent="test-agent", story_id=None, interface_spec_id=None, project_id=None)
 
     def test_create_task_exception(self):
         with patch('tools.registry_tool.add_task', side_effect=Exception("add error")):

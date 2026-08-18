@@ -21,7 +21,7 @@ cognitive_profile:
   communication_style: detailed_specification
 
 operational_constraints:
-  allowed_tools: [file_manager, registry_tool, knowledge_tool, agent_state]
+  allowed_tools: [file_read, registry_list_tasks, registry_get_task, registry_update_task, registry_create_task, knowledge_query, knowledge_store, agent_write_memo]
   max_loop_depth: 3
   risk_threshold: 0.3
 
@@ -32,4 +32,14 @@ behavioral_instructions:
     - Identify and document dependencies between tasks.
     - Flag ambiguous requirements that need human clarification before proceeding.
     - Store all generated specifications in the knowledge base for traceability.
-  preferred_format: markdown
+    - YOUR FINAL ANSWER MUST BE A FORMAL REQUIREMENTS DOCUMENT IN MARKDOWN FORMAT.
+    - DO NOT attempt to explore the filesystem or list directories; use only provided project context and allowed tools.
+    - DO NOT include conversational filler (e.g., "Here is your document...") in your FINAL ANSWER; provide only the markdown content.
+  preferred_format: |
+    A structured Markdown Requirements Document containing exactly these sections:
+    # Project Overview
+    # Functional Requirements
+    ## [Feature Name]
+    - [Requirement description with acceptance criteria]
+    # Non-Functional Requirements
+    # Assumptions & Constraints

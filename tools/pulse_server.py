@@ -104,23 +104,15 @@ def _safe_load_registry() -> Dict[str, Any]:
     return {}
 
 def _safe_read_events() -> List[str]:
-    try:
-        if bootstrap.EVENT_LOG_PATH.exists():
-            content = bootstrap.EVENT_LOG_PATH.read_text(encoding="utf-8").strip()
-            if content:
-                return content.split("\n")
-    except (OSError, PermissionError):
-        pass
     return []
 
 def _load_initial_state():
-    global _cached_registry, _cached_event_lines, registry_position, event_position
+    global _cached_registry, registry_position, event_position
     print("DEBUG: Running _load_initial_state...")
     _cached_registry = _safe_load_registry()
-    _cached_event_lines = _safe_read_events()
+    event_position = 0
     registry_position = len(_cached_registry.get("tasks", []))
-    event_position = len(_cached_event_lines)
-    print(f"DEBUG: Initial state loaded. Registry tasks: {len(_cached_registry.get('tasks', []))}, Events lines: {len(_cached_event_lines)}")
+    print(f"DEBUG: Initial state loaded. Registry tasks: {len(_cached_registry.get('tasks', []))}, Events disabled.")
 
 _load_initial_state()
 
@@ -176,27 +168,7 @@ class _FileChangeHandler(FileSystemEventHandler):
                 registry_position = len(new_tasks)
 
     def _handle_event_change(self):
-        global _cached_event_lines, event_position
-        time.sleep(0.1)  # debounce
-        with lock:
-            new_lines = _safe_read_events()
-            delta_lines = new_lines[event_position:]
-            _cached_event_lines = new_lines
-
-            if delta_lines:
-                events = []
-                for line in delta_lines:
-                    try:
-                        events.append(json.loads(line.strip()))
-                    except (json.JSONDecodeError, TypeError):
-                        continue
-                if events:
-                    payload = {
-                        "type": "event_update",
-                        "events": events,
-                    }
-                    _broadcast(payload)
-                    event_position = len(new_lines)
+        pass
 
     def _handle_state_change(self):
         time.sleep(0.1)
@@ -263,17 +235,10 @@ print("DEBUG: Observer started.")
 @app.get("/api/registry")
 async def get_registry():
     return _safe_load_registry()
-
 @app.get("/api/events")
 async def get_events(limit: int = 100):
-    lines = _safe_read_events()
-    events = []
-    for line in lines[-limit:]:
-        try:
-            events.append(json.loads(line.strip()))
-        except (json.JSONDecodeError, TypeError):
-            continue
-    return {"events": events}
+    """Returns the last N events from the log."""
+    return {"events": [], "message": "Event logging is currently disabled."}
 
 @app.post("/api/telemetry")
 async def receive_telemetry(request: Request):

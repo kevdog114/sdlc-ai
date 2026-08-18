@@ -24,12 +24,13 @@ class TestIsInstalled:
 
 class TestServerLifecycle:
     def test_start_server_not_installed(self):
-        with patch('tools.opencode_tool.is_installed', return_value=False):
-            with patch('tools.opencode_tool.append_event'):
-                from tools.opencode_tool import start_server
-                result = start_server()
-                assert result["success"] is False
-                assert "not installed" in result["error"]
+        with patch('tools.opencode_tool.is_server_running', return_value=False):
+            with patch('tools.opencode_tool.is_installed', return_value=False):
+                with patch('tools.opencode_tool.append_event'):
+                    from tools.opencode_tool import start_server
+                    result = start_server()
+                    assert result["success"] is False
+                    assert "not installed" in result["error"]
 
     def test_start_server_already_running(self):
         import tools.opencode_tool as oc
@@ -42,6 +43,23 @@ class TestServerLifecycle:
             result = oc.start_server()
             assert result["success"] is True
             assert result["already_running"] is True
+        finally:
+            oc._server_process = orig_proc
+            oc._server_port = orig_port
+
+    def test_start_server_reuses_existing_network_server(self):
+        import tools.opencode_tool as oc
+        orig_proc = oc._server_process
+        orig_port = oc._server_port
+        try:
+            oc._server_process = None
+            oc._server_port = None
+            with patch('tools.opencode_tool.is_server_running', return_value=True):
+                with patch('tools.opencode_tool._get_base_url', return_value='http://127.0.0.1:4096'):
+                    result = oc.start_server()
+                    assert result["success"] is True
+                    assert result["already_running"] is True
+                    assert result["reused"] is True
         finally:
             oc._server_process = orig_proc
             oc._server_port = orig_port
@@ -91,7 +109,9 @@ class TestServerLifecycle:
         orig_port = oc._server_port
         try:
             oc._server_port = None
-            assert oc.is_server_running() is False
+            with patch('tools.opencode_tool.socket.socket') as mock_socket:
+                mock_socket.return_value.__enter__.return_value.connect_ex.return_value = 1
+                assert oc.is_server_running() is False
         finally:
             oc._server_port = orig_port
 

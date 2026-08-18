@@ -21,7 +21,7 @@ cognitive_profile:
   communication_style: concise_alert
 
 operational_constraints:
-  allowed_tools: [file_manager, shell_executor, network_tool, registry_tool, knowledge_tool, agent_state]
+  allowed_tools: [shell, file_read, dir_list, registry_list_tasks, registry_get_task, knowledge_query, knowledge_store, agent_write_memo]
   max_loop_depth: 5
   risk_threshold: 0.1
 

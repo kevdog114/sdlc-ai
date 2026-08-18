@@ -21,7 +21,7 @@ cognitive_profile:
   communication_style: concise_technical
 
 operational_constraints:
-  allowed_tools: [file_manager, shell_executor, search_files]
+  allowed_tools: [shell, file_read, dir_list]
   max_loop_depth: 3
   risk_threshold: 0.2
 

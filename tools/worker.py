@@ -16,6 +16,7 @@ try:
     from registry_tool import update_task_status, get_task_by_id
     from llm_tool import query_llm
     from bootstrap import append_event
+    from agent_logger import log_agent_start, log_agent_step, log_agent_complete
     # Import tools for execution
     import shell_executor
     import file_manager
@@ -104,21 +105,46 @@ def execute_tool(name: str, params: Dict[str, Any]) -> Dict[str, Any]:
         print(f"[!] Tool Execution Error ({name}): {e}")
         return {"success": False, "error": str(e)}
 
-def execute_task(task_id: int, description: str, persona: str):
+def execute_task(task_id: int, description: str, persona: str, project_id: Optional[str] = None):
     """The main ReAct execution loop."""
     append_event("system:worker", {"action": "started", "task_id": task_id, "persona": persona})
     print(f"[*] Worker #{task_id} ({persona}) started.")
 
+    # Resolve project_id from task if not provided
+    if not project_id:
+        task_data = get_task_by_id(task_id)
+        if task_data and task_data.get("project_id"):
+            project_id = task_data["project_id"]
+
     # Start the conversation history for the ReAct loop
     history = []
     system_prompt = build_system_prompt(persona, description)
+
+    # Log agent start
+    job_id = f"worker-{task_id}"
+    log_agent_start(
+        project_id=project_id,
+        job_id=job_id,
+        persona=persona,
+        system_prompt=system_prompt,
+        args={"task_id": task_id, "description": description, "persona": persona, "project_id": project_id},
+        goal=description,
+        task_id=task_id,
+    )
     
     try:
         update_task_status(task_id, "in_progress", notes=f"Agent ({persona}) is reasoning...")
-
+        printf(f"[*] Task #{task_id} is now in progress. Beginning ReAct loop.")
         # Max turns to prevent infinite loops
         for turn in range(15):
+            
             print(f"\n--- Turn {turn+1} ---")
+            log_agent_step(
+                project_id=project_id,
+                job_id=job_id,
+                turn=turn + 1,
+                phase="thinking",
+            )
             
             # 1. Query LLM with current context
             # We include the system prompt and all previous thoughts/actions/observations
@@ -145,6 +171,19 @@ def execute_task(task_id: int, description: str, persona: str):
             if "FINAL ANSWER:" in content:
                 final_result = content.split("FINAL ANSWER:")[1].strip()
                 print(f"[+] Task #{task_id} complete.")
+                log_agent_step(
+                    project_id=project_id,
+                    job_id=job_id,
+                    turn=turn + 1,
+                    phase="final_answer",
+                    detail=final_result[:1000],
+                )
+                log_agent_complete(
+                    project_id=project_id,
+                    job_id=job_id,
+                    success=True,
+                    result=final_result[:1000],
+                )
                 update_task_status(task_id, "done", notes=f"Completed by {persona}. Result snippet: {final_result[:150]}...")
                 append_event("system:worker", {"action": "completed", "task_id": task_id, "success": True})
                 return
@@ -165,8 +204,25 @@ def execute_task(task_id: int, description: str, persona: str):
                     params = json.loads(args_json_str)
 
                     # 4. Execute the Tool
+                    log_agent_step(
+                        project_id=project_id,
+                        job_id=job_id,
+                        turn=turn + 1,
+                        phase="action",
+                        tool_name=tool_name,
+                        tool_params=params,
+                    )
+
                     observation = execute_tool(tool_name, params)
                     print(f"[OBSERVATION]: {observation}")
+
+                    log_agent_step(
+                        project_id=project_id,
+                        job_id=job_id,
+                        turn=turn + 1,
+                        phase="observation",
+                        observation=json.dumps(observation)[:2000],
+                    )
                     
                     # Append observation to history for next LLM turn
                     history.append({"role": "user", "content": f"OBSERVATION: {json.dumps(observation)}"})
@@ -178,13 +234,34 @@ def execute_task(task_id: int, description: str, persona: str):
             else:
                 # If no ACTION is found and no FINAL ANSWER is found, the agent might be stuck in a thought loop.
                 print("[!] Agent provided response without ACTION or FINAL ANSWER. Forcing next turn.")
-                history.append({"role": "user", "content": "Please use the proper format: either provide an ACTION/ARGS block or a FINAL ANSWER."})
+                nudge = "Please use the proper format: either provide an ACTION/ARGS block or a FINAL ANSWER."
+                log_agent_step(
+                    project_id=project_id,
+                    job_id=job_id,
+                    turn=turn + 1,
+                    phase="nudge",
+                    detail=nudge,
+                )
+                history.append({"role": "user", "content": nudge})
 
-        raise Exception("Exceeded maximum reasoning turns (15). The agent is stuck in a loop.")
+        error_msg = "Exceeded maximum reasoning turns (15). The agent is stuck in a loop."
+        log_agent_complete(
+            project_id=project_id,
+            job_id=job_id,
+            success=False,
+            error=error_msg,
+        )
+        raise Exception(error_msg)
 
     except Exception as e:
         error_msg = str(e)
         print(f"[!] Task #{task_id} failed: {error_msg}")
+        log_agent_complete(
+            project_id=project_id,
+            job_id=job_id,
+            success=False,
+            error=error_msg,
+        )
         update_task_status(task_id, "failed", notes=f"Error: {error_msg}")
         append_event("system:worker", {"action": "failed", "task_id": task_id, "error": error_msg, "success": False})
         sys.exit(1)
@@ -194,6 +271,7 @@ if __name__ == "__main__":
     parser.add_argument("--task-id", type=int, required=True, help="The ID of the task from the registry")
     parser.add_argument("--description", type=str, required=True, help="Description of the task")
     parser.add_argument("--persona", type=str, default="unassigned", help="Specialist persona")
+    parser.add_argument("--project-id", type=str, default=None, help="Project ID for .sdlc/ logging")
 
     args = parser.parse_args()
-    execute_task(args.task_id, args.description, args.persona)
+    execute_task(args.task_id, args.description, args.persona, args.project_id)

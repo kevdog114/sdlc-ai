@@ -24,7 +24,7 @@ cognitive_profile:
   communication_style: concise_technical
 
 operational_constraints:
-  allowed_tools: [file_manager, shell_executor, registry_tool, agent_state]
+  allowed_tools: [shell, file_read, file_write, dir_list, registry_list_tasks, registry_get_task, registry_update_task, agent_write_memo]
   max_loop_depth: 3
   risk_threshold: 0.2
 

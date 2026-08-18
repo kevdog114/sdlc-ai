@@ -56,22 +56,32 @@ def run_executor_loop(poll_interval: int = 10):
                     print(f"    [+] Spawning {persona} for Task #{task_id}: {description[:50]}...")
                     
                     try:
+                        # Resolve project_id from task
+                        task_data = get_task_by_id(task_id)
+                        project_id = task_data.get("project_id") if task_data else None
+
                         # Launch the worker as a background subprocess.
                         # This makes the agent a real, independent process within sdlc-ai.
+                        worker_args = [
+                            sys.executable, 
+                            str(TOOLS_DIR / "worker.py"),
+                            "--task-id", str(task_id),
+                            "--description", description,
+                            "--persona", persona
+                        ]
+                        if project_id:
+                            worker_args.extend(["--project-id", project_id])
+
                         process = subprocess.Popen(
-                            [
-                                sys.executable, 
-                                str(TOOLS_DIR / "worker.py"),
-                                "--task-id", str(task_id),
-                                "--description", description,
-                                "--persona", persona
-                            ],
+                            worker_args,
                             stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE,
                             text=True,
                             # Set PYTHONPATH so the worker can find bootstrap/registry/llm tools
                             env={**os.environ, "PYTHONPATH": f"{TOOLS_DIR}:{sys.path[0]}"}
                         )
+
+                        printf(f"    [*] Launched process with PID {process.pid} for Task #{task_id}.")
                         
                         active_processes[task_id] = process
                         

@@ -112,6 +112,7 @@ def create_new_task(
     agent: str = "unassigned",
     story_id: Optional[str] = None,
     interface_spec_id: Optional[str] = None,
+    project_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Create a new task via bootstrap.add_task and return the created task."""
     try:
@@ -120,6 +121,7 @@ def create_new_task(
             agent=agent,
             story_id=story_id,
             interface_spec_id=interface_spec_id,
+            project_id=project_id,
         )
         append_event(
             "tool:registry_manager",

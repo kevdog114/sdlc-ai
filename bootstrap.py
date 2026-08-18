@@ -74,6 +74,7 @@ def add_task(
     dependencies: Optional[List[int]] = None,
     story_id: Optional[str] = None,
     interface_spec_id: Optional[str] = None,
+    project_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Add a new task to the registry and return it."""
     registry = load_json(TASK_REGISTRY_PATH, {})
@@ -89,6 +90,7 @@ def add_task(
         "dependencies": dependencies or [],
         "story_id": story_id,
         "interface_spec_id": interface_spec_id,
+        "project_id": project_id,
         "created_at": _now(),
         "updated_at": _now(),
         "verification_artifacts": [],

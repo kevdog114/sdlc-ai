@@ -4,7 +4,7 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 import requests
 try:
@@ -35,7 +35,8 @@ def _get_local_config() -> Dict[str, Any]:
         return {}
 
 def query_llm(
-    prompt: str,
+    prompt: Optional[str] = None,
+    messages: Optional[List[Dict[str, str]]] = None,
     system_prompt: Optional[str] = None,
     temperature: float = 0.7,
     model: str = DEFAULT_MODEL,
@@ -73,10 +74,17 @@ def query_llm(
     if timeout == DEFAULT_TIMEOUT and 'timeout' in llm_cfg:
         timeout = int(llm_cfg['timeout'])
 
-    messages = []
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": prompt})
+    # Use provided messages or construct them from prompt/system_prompt
+    if messages is None:
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        if prompt:
+            messages.append({"role": "user", "content": prompt})
+    else:
+        # If messages are provided, ensure the system_prompt is at index 0 if it's not already there
+        if system_prompt and (not messages or messages[0].get("role") != "system"):
+            messages.insert(0, {"role": "system", "content": system_prompt})
 
     # Build safe request payload for logging (redacts API key)
     log_request = {
@@ -116,7 +124,7 @@ def query_llm(
                 "tool:llm_reasoning",
                 {
                     "action": "query",
-                    "prompt_len": len(prompt),
+                    "prompt_len": len(messages[0]["content"]) if messages else 0,
                     "response_len": len(content),
                     "success": True,
                     "usage": usage_dict,
@@ -161,6 +169,14 @@ def query_llm(
     start = time.monotonic()
     try:
         resp = requests.post(endpoint, headers=headers, data=json.dumps(payload), timeout=timeout)
+        
+        if resp.status_code != 200:
+            print(f"\n[DEBUG] LLM Error Details:")
+            print(f"Endpoint: {endpoint}")
+            print(f"Payload: {json.dumps(payload, indent=2)}")
+            print(f"Status Code: {resp.status_code}")
+            print(f"Response Body: {resp.text}")
+
         resp.raise_for_status()
         data = resp.json()
         duration_ms = (time.monotonic() - start) * 1000
@@ -175,7 +191,7 @@ def query_llm(
             "tool:llm_reasoning",
             {
                 "action": "query",
-                "prompt_len": len(prompt),
+                "prompt_len": len(messages[0]["content"]) if messages else 0,
                 "response_len": len(content),
                 "success": True,
                 "usage": usage,

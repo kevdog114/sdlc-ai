@@ -21,7 +21,7 @@ cognitive_profile:
   communication_style: concise_summary
 
 operational_constraints:
-  allowed_tools: [file_manager, shell_executor, knowledge_tool, agent_state]
+  allowed_tools: [shell, file_read, dir_list, knowledge_query, knowledge_store, agent_write_memo]
   max_loop_depth: 4
   risk_threshold: 0.3
 

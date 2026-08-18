@@ -10,15 +10,14 @@ ambiguities are resolved (via Telegram or Dashboard).
 """
 
 import json
-import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 from uuid import uuid4
 
 from bootstrap import (
     BASE_DIR,
-    STATE_DIR,
     append_event,
     ensure_initialized,
     load_json,
@@ -26,10 +25,21 @@ from bootstrap import (
     save_json,
     save_project_state,
 )
-
 from tools.llm_tool import query_llm
 
+def _extract_json(content: str) -> Optional[Dict[str, Any]]:
+    """Robustly extract JSON from a string that may contain markdown fences or preamble."""
+    match = re.search(r'([\[\{].*[\]\}])', content, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group(1))
+        except (json.JSONDecodeError, TypeError):
+            return None
+    return None
+
 # --- Configuration ----------------------------------------------
+MOCK_EXECUTION = False
+
 USER_PROJECTS_ROOT = Path("~/dev-projects/sdlc-ai/user_projects").expanduser()
 
 PHASE_BA_ANALYSIS = "ba_analysis"
@@ -149,13 +159,13 @@ Return your response as a JSON object with exactly two keys:
 Return ONLY valid JSON, nothing else."""
 
 
-def _ba_analyze(description: str) -> Dict[str, Any]:
+def _ba_analyze(refined_requirements: str) -> Dict[str, Any]:
     """Run the BA analysis phase.
-
+    
     Returns:
         Dict with keys: refined_requirements, ambiguities (list), success (bool)
     """
-    prompt = BA_ANALYSIS_PROMPT.format(description=description)
+    prompt = BA_ANALYSIS_PROMPT.format(description=refined_requirements)
     result = query_llm(prompt, temperature=0.3)
 
     if not result["success"] or not result.get("content"):
@@ -171,39 +181,34 @@ def _ba_analyze(description: str) -> Dict[str, Any]:
         }
 
     content = result["content"].strip()
-    # Clean markdown fences
-    if content.startswith("```"):
-        lines = content.split("\n")
-        lines = [l for l in lines if not l.strip().startswith("```")]
-        content = "\n".join(lines).strip()
+    parsed = _extract_json(content)
 
-    try:
-        parsed = json.loads(content)
-        refined = parsed.get("refined_requirements", description)
-        ambiguities = parsed.get("ambiguities", [])
+    if parsed is None:
         append_event(
             "tool:project",
-            {
-                "action": "ba_analyze",
-                "success": True,
-                "ambiguity_count": len(ambiguities),
-            },
-        )
-        return {
-            "success": True,
-            "refined_requirements": refined,
-            "ambiguities": ambiguities,
-        }
-    except (json.JSONDecodeError, TypeError) as e:
-        append_event(
-            "tool:project",
-            {"action": "ba_analyze", "success": False, "error": f"JSON parse: {e}"},
+            {"action": "ba_analyze", "success": False, "error": "Failed to parse JSON from LLM response"},
         )
         return {
             "success": True,
             "refined_requirements": content,
             "ambiguities": [],
         }
+
+    refined = parsed.get("refined_requirements", content)
+    ambiguities = parsed.get("ambiguities", [])
+    append_event(
+        "tool:project",
+        {
+            "action": "ba_analyze",
+            "success": True,
+            "ambiguity_count": len(ambiguities),
+        },
+    )
+    return {
+        "success": True,
+        "refined_requirements": refined,
+        "ambiguities": ambiguities,
+    }
 
 
 # ── Architect Design Prompts ────────────────────────────────────
@@ -252,26 +257,22 @@ def _architect_design(refined_requirements: str) -> Dict[str, Any]:
         }
 
     content = result["content"].strip()
-    if content.startswith("```"):
-        lines = content.split("\n")
-        lines = [l for l in lines if not l.strip().startswith("```")]
-        content = "\n".join(lines).strip()
+    parsed = _extract_json(content)
 
-    try:
-        parsed = json.loads(content)
-        architecture = parsed.get("architecture", "")
-        interface_spec = parsed.get("interface_spec", "")
+    if parsed is None:
         append_event(
             "tool:project",
-            {"action": "architect_design", "success": True},
+            {"action": "architect_design", "success": False, "error": "Failed to parse JSON from LLM response"},
         )
-        return {"success": True, "architecture": architecture, "interface_spec": interface_spec}
-    except (json.JSONDecodeError, TypeError) as e:
-        append_event(
-            "tool:project",
-            {"action": "architect_design", "success": False, "error": f"JSON parse: {e}"},
-        )
-        return {"success": False, "architecture": "", "interface_spec": "", "error": str(e)}
+        return {"success": False, "architecture": "", "interface_spec": "", "error": "JSON parse failed"}
+
+    architecture = parsed.get("architecture", "")
+    interface_spec = parsed.get("interface_spec", "")
+    append_event(
+        "tool:project",
+        {"action": "architect_design", "success": True},
+    )
+    return {"success": True, "architecture": architecture, "interface_spec": interface_spec}
 
 
 # ── Story/Task Creation from Architecture ───────────────────────
@@ -288,15 +289,17 @@ Requirements:
 Interface Specification:
 {interface_spec}
 
-Create a list of user stories. Each story should have:
-- title: A short user story title
-- description: Detailed description
-- acceptance_criteria: List of acceptance criteria
-- priority: high, medium, or low
-- tasks: List of tasks, each with:
-    - description: Clear actionable task description
-    - role: One of: developer, qa, researcher, architect
-    - dependencies: List of task indices (0-based) within this story that must complete first
+CRITICAL: Every single user story MUST include a non-empty "tasks" array. Do not create a story without at least one task.
+
+Create a list of user stories. Each story must have exactly these keys:
+- title: A short, descriptive user story title.
+- description: Detailed context and value statement (e.g., 'As a [user], I want to [action] so that [value]').
+- acceptance_criteria: An array of specific, measurable criteria for completion.
+- priority: One of: "high", "medium", or "low".
+- tasks: An array of task objects. Each task must have:
+    - description: A clear, actionable technical instruction.
+    - role: One of: "developer", "qa", "researcher", "architect".
+    - dependencies: An array of integer indices (0-based) representing other tasks in THIS story that MUST be completed first. If no dependencies, use [].
 
 Return your response as a JSON array of story objects.
 Return ONLY valid JSON, nothing else."""
@@ -323,22 +326,30 @@ def _create_stories_and_tasks(
         return []
 
     content = result["content"].strip()
-    if content.startswith("```"):
-        lines = content.split("\n")
-        lines = [l for l in lines if not l.strip().startswith("```")]
-        content = "\n".join(lines).strip()
+    parsed = _extract_json(content)
 
-    try:
-        stories = json.loads(content)
-        if not isinstance(stories, list):
-            return []
+    # Resilience: If it's a dict instead of a list, look for common keys like 'stories' or 'user_stories'
+    stories = None
+    if isinstance(parsed, list):
+        stories = parsed
+    elif isinstance(parsed, dict):
+        for key in ["stories", "user_stories", "data"]:
+            if key in parsed and isinstance(parsed[key], list):
+                stories = parsed[key]
+                break
+
+    if stories is None:
         append_event(
             "tool:project",
-            {"action": "create_stories", "success": True, "story_count": len(stories)},
+            {"action": "create_stories", "success": False, "error": "Failed to parse JSON or response was not a list of stories"},
         )
-        return stories
-    except (json.JSONDecodeError, TypeError):
         return []
+
+    append_event(
+        "tool:project",
+        {"action": "create_stories", "success": True, "story_count": len(stories)},
+    )
+    return stories
 
 
 # ── Execution Phase ─────────────────────────────────────────────
@@ -404,15 +415,19 @@ def _execute_story_tasks(
         if dep_ids:
             context += f"\nDependencies (task IDs): {dep_ids}"
 
-        result = delegate_task(
-            task_description=desc,
-            role_name=role,
-            context=context,
-            dependencies=dep_ids,
-            story_id=story_id,
-            interface_spec_id=spec_id,
-        )
-        tid = result.get("task_id")
+        if MOCK_EXECUTION:
+            tid = f"mock-{uuid4().hex[:6]}"
+            result = {"success": True, "task_id": tid}
+        else:
+            result = delegate_task(
+                task_description=desc,
+                role_name=role,
+                context=context,
+                dependencies=dep_ids,
+                story_id=story_id,
+                interface_spec_id=spec_id,
+            )
+            tid = result.get("task_id")
         if tid is not None:
             task_id_map[idx] = tid
             try:
@@ -556,7 +571,7 @@ def submit_project(description: str, name: Optional[str] = None, project_id: Opt
     return _continue_to_architect(project)
 
 
-def resume_project(project_id: str) -> Dict[str, Any]:
+def resume_project(project_id: str, auto_answer: bool = False) -> Dict[str, Any]:
     """Resume a project that was paused for clarifications.
 
     Checks if all clarifications are answered. If so, continues to
@@ -564,6 +579,7 @@ def resume_project(project_id: str) -> Dict[str, Any]:
 
     Args:
         project_id: The project to resume.
+        auto_answer: If True, answers all pending questions with default text.
 
     Returns:
         Dict with status and results.
@@ -579,17 +595,24 @@ def resume_project(project_id: str) -> Dict[str, Any]:
             "error": f"Project is in state '{project['status']}', not awaiting clarification",
         }
 
-    from tools.clarification_tool import has_pending
+    from tools.clarification_tool import has_pending, answer_all_pending
 
     if has_pending(project_id):
-        return {
-            "success": True,
-            "project_id": project_id,
-            "status": PROJECT_STATUS_AWAITING_CLARIFICATION,
-            "message": "Still awaiting clarification responses.",
-        }
+        if auto_answer:
+            count = answer_all_pending(project_id)
+            append_event(
+                "tool:project",
+                {"action": "auto_answered", "project_id": project_id, "count": count},
+            )
+        else:
+            return {
+                "success": True,
+                "project_id": project_id,
+                "status": PROJECT_STATUS_AWAITING_CLARIFICATION,
+                "message": "Still awaiting clarification responses.",
+            }
 
-    # All clarifications answered — continue
+    # All clarifications answered (or auto-answered) — continue
     append_event(
         "tool:project",
         {"action": "resume_project", "project_id": project_id, "phase": project["phase"]},

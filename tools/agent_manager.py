@@ -8,12 +8,14 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from bootstrap import append_event, load_project_state, save_project_state, AGENT_JOBS_DIR, BASE_DIR
+from registry_tool import get_task_by_id
+from agent_logger import resolve_sdlc_dir
 
 # Directory to store logs and metadata for spawned agents
 JOB_DIR = AGENT_JOBS_DIR
 JOB_DIR.mkdir(parents=True, exist_ok=True)
 
-def spawn_agent(goal: str, persona: str = "architect", api_url: Optional[str] = None, max_iterations: int = 10) -> dict:
+def spawn_agent(goal: str, persona: str = "architect", api_url: Optional[str] = None, max_iterations: int = 10, task_id: Optional[int] = None, project_id: Optional[str] = None) -> dict:
     """
     Spawns a new agent process in the background to accomplish a goal.
     Returns a job_id that can be used to track progress.
@@ -30,14 +32,30 @@ def spawn_agent(goal: str, persona: str = "architect", api_url: Optional[str] = 
     python_exe = sys.executable
     project_root = str(BASE_DIR)
     
+    # Resolve project_id from task if not explicitly provided
+    if not project_id and task_id:
+        task_data = get_task_by_id(task_id)
+        if task_data and task_data.get("project_id"):
+            project_id = task_data["project_id"]
+
+    # Initialize .sdlc/ directory for the project
+    if project_id:
+        resolve_sdlc_dir(project_id)
+
     command = [
         python_exe,
         "-m", "core.runtime",
         "--goal", goal,
         "--persona", persona,
         "--max_iterations", str(max_iterations),
-        "--job_id", job_id
+        "--job_id", job_id,
     ]
+
+    if task_id:
+        command.extend(["--task_id", str(task_id)])
+
+    if project_id:
+        command.extend(["--project_id", project_id])
 
     # Use environment variable or argument for API URL (Pulse Server)
     if api_url:

@@ -176,7 +176,7 @@ class OrchestratorDaemon:
                 role = self._get_available_role(description)
                 logger.info(f"Spawning agent '{role}' for task #{task_id}: {description}")
                 
-                spawn_res = spawn_agent(goal=description, persona=role)
+                spawn_res = spawn_agent(goal=description, persona=role, task_id=task_id)
                 
                 if spawn_res["success"]:
                     job_id = spawn_res["job_id"]

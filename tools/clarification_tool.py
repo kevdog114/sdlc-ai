@@ -145,6 +145,16 @@ def answer_request(
     return None
 
 
+def answer_all_pending(project_id: str, answer: str = "Proceeding with requirements as stated.") -> int:
+    """Answer all pending requests for a project at once. Returns count of answered requests."""
+    pending = get_pending_for_project(project_id)
+    count = 0
+    for req in pending:
+        if answer_request(req["id"], answer, answered_by="turbo-mode"):
+            count += 1
+    return count
+
+
 def cancel_request(request_id: str) -> bool:
     """Cancel a clarification request (e.g. if the question is no longer relevant)."""
     registry = _load_registry()

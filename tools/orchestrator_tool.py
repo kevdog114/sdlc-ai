@@ -198,6 +198,7 @@ def delegate_task(
     story_id: Optional[str] = None,
     interface_spec_id: Optional[str] = None,
     existing_task_id: Optional[int] = None,
+    project_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Create a registry task and execute it with the given agent persona.
 
@@ -234,6 +235,7 @@ def delegate_task(
             agent=role_name,
             story_id=story_id,
             interface_spec_id=interface_spec_id,
+            project_id=project_id,
         )
         task_id = task.get("id")
 
@@ -279,6 +281,8 @@ def delegate_task(
         except ImportError:
             pass
 
+    error_msg = "Unknown error"
+
     # Route developer tasks through OpenCode; other roles use direct LLM
     if role_name == "developer":
         try:
@@ -287,13 +291,14 @@ def delegate_task(
             if not is_server_running():
                 srv = start_server()
                 if not srv.get("success"):
+                    error_msg = srv.get("error", "OpenCode server failed to start")
                     append_event(
                         "tool:orchestrator",
                         {"action": "delegate_task", "task_id": task_id, "role": role_name,
-                         "success": False, "error": srv.get("error", "OpenCode server failed to start")},
+                         "success": False, "error": error_msg},
                     )
                     return {"task_id": task_id, "success": False, "output": "",
-                            "error": srv.get("error", "OpenCode unavailable"), "stage_gates": []}
+                            "error": error_msg, "stage_gates": []}
 
             oc_result = execute_task(
                 task_description=task_description,
