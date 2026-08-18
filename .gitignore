@@ -16,21 +16,24 @@ ENV/
 logs/
 runtime_logs/
 llm_log/*.json
-state/*.json
 state/
 state.old/
 user_projects.old/
 user_projects/
 tasks/*.json
-sdlc_ai.egg-info/
+.sdlc/
+sdlc-logs/
 
 # Testing and artifacts
 test_file_exists.txt
 test_manual.txt
+.pytest_cache/
+debug_log.txt
 
 # Env & Secrets
 .env
 .secrets/
+config.yaml
 
 # OS files
 .DS_Store
