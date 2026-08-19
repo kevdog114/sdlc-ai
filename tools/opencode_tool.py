@@ -1,47 +1,74 @@
 import os
+import shutil
+import subprocess
 import time
 import requests
 from typing import Any, Dict, List, Optional
 
+# Real event logging — do NOT shadow bootstrap.append_event with a print stub,
+# or OpenCode activity never reaches the event log (the dashboard's most
+# important subsystem goes blind).
+from bootstrap import append_event
+
 # Constants for polling and timeouts
 _REQUEST_TIMEOUT = 60
+_API_TIMEOUT = 30
 _TASK_POLL_INTERVAL = 10
 _MAX_TASK_WAIT_TIME = 1800
 _STARTUP_TIMEOUT = 30
-_DEFAULT_PORT = 4096
+_DEFAULT_PORT = int(os.environ.get("OPENCODE_PORT", "4096"))
+_PORT_SCAN_RANGE = 10
 _SERVER_HOSTNAME = "127.0.0.1"
+_OPENCODE_BIN = os.environ.get("OPENCODE_BIN", "opencode")
 
-# BASE_DIR fallback if not imported from bootstrap
+# The port a health check last succeeded on, and any server we started.
+_active_port: Optional[int] = None
+_server_process: Optional[subprocess.Popen] = None
+
 try:
     from bootstrap import BASE_DIR
 except ImportError:
     BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
-def is_server_running() -> bool:
-    """Check if an OpenCode server is up and responding."""
-    base_url = f"http://{_SERVER_HOSTNAME}:{_DEFAULT_PORT}"
+
+def _health_ok(port: int, timeout: float = 2) -> bool:
     try:
-        resp = requests.get(f"{base_url}/global/health", timeout=3)
+        resp = requests.get(f"http://{_SERVER_HOSTNAME}:{port}/global/health", timeout=timeout)
         return resp.status_code == 200
     except requests.RequestException:
-        # Fallback scan if module state is lost
-        for port in range(_DEFAULT_PORT, _DEFAULT_PORT + 10):
-            try:
-                with requests.get(f"http://127.0.0.1:{port}/global/health", timeout=1) as r:
-                    if r.status_code == 200: return True
-            except: continue
         return False
 
+
+def _discover_port() -> Optional[int]:
+    """Find the port a live OpenCode server is on, caching the result."""
+    global _active_port
+    if _active_port and _health_ok(_active_port):
+        return _active_port
+    for port in range(_DEFAULT_PORT, _DEFAULT_PORT + _PORT_SCAN_RANGE):
+        if _health_ok(port, timeout=1):
+            _active_port = port
+            return port
+    _active_port = None
+    return None
+
+
+def is_server_running() -> bool:
+    """Check if an OpenCode server is up and responding (any scanned port)."""
+    return _discover_port() is not None
+
+
+def is_installed() -> bool:
+    """True only if the OpenCode binary is actually on PATH."""
+    return shutil.which(_OPENCODE_BIN) is not None
+
+
 def _get_base_url() -> str:
-    return f"http://{_SERVER_HOSTNAME}:{_DEFAULT_PORT}"
+    """Base URL for the live server — the discovered port, not a fixed guess."""
+    port = _active_port or _discover_port() or _DEFAULT_PORT
+    return f"http://{_SERVER_HOSTNAME}:{port}"
 
-def append_event(tool_name: str, event_data: Dict[str, Any]):
-    """Appends an event to the SDLC-AI registry."""
-    # This is typically handled by core.runtime's append_event, 
-    # but we need a local version for tool calls if they are direct.
-    print(f"[{tool_name}] Event: {event_data}")
 
-def _api_post(endpoint: str, json_body: Dict[str, Any], timeout: int = 30, job_id: Optional[str] = None, project_id: Optional[str] = None) -> Dict[str, Any]:
+def _api_post(endpoint: str, json_body: Dict[str, Any], timeout: int = _API_TIMEOUT, job_id: Optional[str] = None, project_id: Optional[str] = None) -> Dict[str, Any]:
     url = f"{_get_base_url()}{endpoint}"
     params = {}
     if job_id: params["job_id"] = job_id
@@ -49,17 +76,22 @@ def _api_post(endpoint: str, json_body: Dict[str, Any], timeout: int = 30, job_i
     try:
         resp = requests.post(url, json=json_body, params=params, timeout=timeout)
         return resp.json()
+    except requests.Timeout:
+        return {"error": f"timeout after {timeout}s"}
     except Exception as e:
         return {"error": str(e)}
 
-def _api_get(endpoint: str, job_id: Optional[str] = None, project_id: Optional[str] = None) -> Dict[str, Any]:
+
+def _api_get(endpoint: str, job_id: Optional[str] = None, project_id: Optional[str] = None, timeout: int = _API_TIMEOUT) -> Dict[str, Any]:
     url = f"{_get_base_url()}{endpoint}"
     params = {}
     if job_id: params["job_id"] = job_id
     if project_id: params["project_id"] = project_id
     try:
-        resp = requests.get(url, params=params)
+        resp = requests.get(url, params=params, timeout=timeout)
         return resp.json()
+    except requests.Timeout:
+        return {"error": f"timeout after {timeout}s"}
     except Exception as e:
         return {"error": str(e)}
 
@@ -138,14 +170,14 @@ def execute_task(
         append_event("tool:opencode", {"action": "execute_task", "success": False, "error": err})
         return {"success": False, "error": err}
 
-    # --- HARDCODE MODEL HERE ---
-    effective_model = "lmstudio/qwen/qwen3.6-27b"
-    
+    # Resolve the model: caller-provided "provider/model", else config default.
+    provider_id, model_id = _resolve_model(model)
+
     # Build message payload
     message_body: Dict[str, Any] = {
         "parts": [{"type": "text", "text": full_prompt}],
         "system": system_prompt,
-        "model": {"providerID": "lmstudio", "modelID": "qwen/qwen3.6-27b"},
+        "model": {"providerID": provider_id, "modelID": model_id},
     }
     if agent:
         message_body["agent"] = agent
@@ -218,12 +250,82 @@ def execute_task(
         "diffs": diffs,
     }
 
-# Placeholder/Stub functions for required imports in core.runtime
+_DEFAULT_PROVIDER = os.environ.get("OPENCODE_PROVIDER", "lmstudio")
+_DEFAULT_MODEL_ID = os.environ.get("OPENCODE_MODEL", "qwen/qwen3.6-27b")
+
+
+def _resolve_model(model: Optional[str]) -> tuple:
+    """Turn a "provider/model" string into (providerID, modelID).
+
+    Falls back to the configured defaults when no model is given. Previously
+    the `model` argument was accepted and silently ignored.
+    """
+    if model and "/" in model:
+        provider, _, model_id = model.partition("/")
+        return provider, model_id
+    if model:
+        return _DEFAULT_PROVIDER, model
+    return _DEFAULT_PROVIDER, _DEFAULT_MODEL_ID
+
+
 def start_server(port: Optional[int] = None, workdir: Optional[str] = None) -> Dict[str, Any]:
-    return {"success": True, "url": _get_base_url()}
+    """Start an OpenCode server, or fail loudly.
+
+    If one is already running, reuse it. Otherwise, when the binary is
+    installed, spawn `opencode serve` and wait for its health check. When it
+    is NOT installed, return a real failure instead of pretending success —
+    the previous stub returned success unconditionally, so every developer
+    task then died with a misleading "server is not running".
+    """
+    global _server_process, _active_port
+
+    running = _discover_port()
+    if running:
+        return {"success": True, "url": f"http://{_SERVER_HOSTNAME}:{running}", "reused": True}
+
+    if not is_installed():
+        return {
+            "success": False,
+            "error": (
+                f"OpenCode binary '{_OPENCODE_BIN}' not found on PATH. Install it "
+                "(or set OPENCODE_BIN), or start the server manually."
+            ),
+        }
+
+    target_port = port or _DEFAULT_PORT
+    try:
+        _server_process = subprocess.Popen(
+            [_OPENCODE_BIN, "serve", "--port", str(target_port)],
+            cwd=workdir or str(BASE_DIR),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError as e:
+        return {"success": False, "error": f"Failed to launch OpenCode: {e}"}
+
+    deadline = time.time() + _STARTUP_TIMEOUT
+    while time.time() < deadline:
+        if _server_process.poll() is not None:
+            return {"success": False, "error": f"OpenCode server exited during startup (code {_server_process.returncode})"}
+        if _health_ok(target_port, timeout=1):
+            _active_port = target_port
+            append_event("tool:opencode", {"action": "start_server", "success": True, "port": target_port})
+            return {"success": True, "url": f"http://{_SERVER_HOSTNAME}:{target_port}"}
+        time.sleep(1)
+
+    return {"success": False, "error": f"OpenCode server did not become healthy within {_STARTUP_TIMEOUT}s"}
+
 
 def stop_server() -> Dict[str, Any]:
-    return {"success": True}
-
-def is_installed() -> bool:
-    return True
+    """Stop a server we started (best effort)."""
+    global _server_process, _active_port
+    if _server_process and _server_process.poll() is None:
+        _server_process.terminate()
+        try:
+            _server_process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            _server_process.kill()
+        _server_process = None
+        _active_port = None
+        return {"success": True, "stopped": True}
+    return {"success": True, "already_stopped": True}

@@ -1,128 +1,144 @@
 # SDLC AI
 
-An autonomous, AI-powered software development lifecycle (SDLC) system designed to function as a complete software scrum team.
+An autonomous, AI-powered software development lifecycle system that operates like a **scrum team**:
+it turns a high-level project description into an estimated product backlog, runs the work in
+**sprints** through a real quality gate, presents each increment for your acceptance, and improves
+itself with a retrospective every sprint.
 
-## Overview
+> **Status:** the core loop is implemented and tested (488 passing tests). It runs against a local
+> LLM (LM Studio / any OpenAI-compatible endpoint) and, for code implementation, an
+> [OpenCode](https://github.com/sst/opencode) server. See [docs/](docs/) for the full review,
+> architecture, and roadmap. Deployment beyond localhost requires an API token (the server refuses
+> to bind to a public interface without one).
 
-The SDLC AI system takes high-level requirements and manages the entire process from conception to deployment and monitoring. It automates the roles traditionally held by a business analyst, software developer, test analyst, release manager, and infrastructure analyst.
+## How it works
 
-## Core Workflow
+Work is split into **definition** and **execution** — the difference between a fire-once script and
+a team you keep a backlog with:
 
-1.  **Requirement Breakdown**: The system accepts high-level requirements and uses an AI model to decompose them into:
-    *   Comprehensive technical requirements.
-    *   **Initial Interface Specification (e.g., OpenAPI/GraphQL)**: Defining the "contract" between components.
-    *   Specific deliverables.
-    *   Granular individual tasks.
+1. **Define.** You submit a project description. A *Business Analyst* agent refines the
+   requirements and asks clarifying questions (via the dashboard or Telegram); a *Solution
+   Architect* agent designs the architecture and a contract-first interface spec; then the work is
+   decomposed into **estimated, project-scoped user stories** (story points on the 1/2/3/5/8 scale)
+   that land in a durable **product backlog**. Nothing is built yet.
+2. **Plan a sprint.** Stories are selected from the backlog — dependency- and priority-aware, under
+   an optional point capacity — into a proposed sprint with a goal.
+3. **Run the sprint.** Starting a sprint (your approval) executes its stories. Each task goes
+   through the **three-key Definition of Done**: a *Developer* implements it (via OpenCode), a
+   *QA* gate **runs the project's real tests** and reviews the result, and an *Architect* gate
+   checks it against the architecture and interface contract. Failing work is retried with the
+   rejection fed back in, then — after a bounded number of tries — **blocked for a human** rather
+   than looping or silently failing.
+4. **Review & accept.** At sprint review you accept or reject each delivered story. Rejections
+   return to the backlog with your notes attached (and feed the next attempt). Only accepted points
+   count toward **velocity**.
+5. **Retrospective.** The system mines the sprint's event log for failure patterns and proposes up
+   to three concrete process changes for your approval.
+6. **Iterate.** Follow-up work enters as a **change request** — the BA sees the existing
+   requirements, architecture, and story ledger and appends *new* stories, rather than rebuilding
+   from scratch.
 
-2.  **Autonomous Execution (The Developer Loop)**:
-    *   Uses **OpenCode** with a selected AI model to execute tasks in the optimal order.
-    *   Each task is completed by an agent acting as a specialized Software Developer (UI or Backend).
-    *   **Contract-First Implementation**: Developers must implement code according to the established Interface Specification.
+A live **dashboard** (the "pulse" server + `radar.html`) shows the kanban board, the backlog, and
+sprints, and lets you drive the whole loop from the browser.
 
-3.  **Quality Assurance & Stage Gates**:
-    *   **Test Analyst Agent**: Identifies stage-gate requirements for every task, such as creating and validating automated UI tests.
-    *   **Architectural Consistency Agent**: An automated agent that checks all changes against the defined system architecture to ensure consistency and prevent technical debt.
+## Quickstart
 
-4.  **Automated Deployment (The Release Manager)**:
-    *   Once deployment information is provided (e.g., Docker Compose configurations, server credentials), the **Release Manager Agent** takes over.
-    *   It automatically builds and deploys the application.
-    *   **Infrastructure Analyst Agent**: Monitors logs for errors, performance regressions, or issues that need immediate attention.
+Requires Python ≥ 3.10.
 
-5.  **Feedback & Reporting**:
-    *   The system generates a daily progress summary.
-    *   Sends notifications to the user via preferred channels (e.g., Telegram) if human intervention is required to resolve an error or provide clarification.
+```bash
+# 1. Install
+pip install -e ".[dev]"          # editable + test deps; or `pip install .`
 
-## Agent Roles & Responsibilities
+# 2. Point it at your LLM (see Configuration below)
+cp config.example.yaml config.yaml   # then edit
+#    …or export env vars instead
 
-The system operates as a multi-agent orchestration where each agent is specialized in a specific domain of the SDLC.
+# 3. Initialize the local state store
+sdlc-bootstrap
 
-| Agent | Primary Responsibility | Key Tasks |
-| :--- | :--- | :--- |
-| **Business Analyst (BA)** | Requirement Decomposition | • Transform high-level human intent into technical requirements.<br>• Decompose requirements into actionable deliverables.<br>• Generate and maintain the master task list. |
-| **Solution Architect** | System Design & Integrity | • Define the high-level technical architecture (tech stack, data models).<br>• Maintain architectural consistency across all code changes.<br>• Approve/Reject structural changes proposed by developers. |
-| **Software Developer** | Task Execution | • Execute granular tasks using OpenCode and selected AI models.<br>• Implement features and bug fixes according to requirements.<br>• Ensure code adheres to established patterns and standards. |
-| **Test Analyst** | Quality Assurance | • Define stage-gate criteria for every task (e.g., unit, integration, UI tests).<br>• Create automated test suites.<br>• Validate that completed tasks meet all acceptance criteria before handoff. |
-| **Infrastructure Analyst** | Environment & Monitoring | • Monitor system logs, resource usage, and error rates.<br>• Detect deployment failures or performance regressions.<br>• Alert the Release Manager of anomalies. |
-| **Release Manager** | Deployment & Orchestration | • Execute build and deployment pipelines (e.g., Docker).<br>• Manage versioning and deployment to specific environments.<br>• Coordinate human intervention when blockers arise. |
+# 4. Start the dashboard (loopback by default) and open http://127.0.0.1:8080
+sdlc-pulse
+```
 
-## Operational Protocols
+From the dashboard you can create a project, answer clarifications, plan and start a sprint, accept
+stories, and read the retrospective. To drive it headless instead:
 
-### 1. Completion & Sign-off Pipeline
-To ensure quality, every task must pass through a strict three-key verification process:
-1.  **Developer**: Completes the code and moves status to `Pending Verification`.
-2.  **Test Analyst**: Executes automated suites. If successful $\rightarrow$ `Testing Passed`. If failed $\rightarrow$ `Rejected` (with error logs attached).
-3.  **Solution Architect**: Performs structural review. If approved $\rightarrow$ `Completed`. If rejected $\rightarrow$ `Rejected` (design violation notice).
+```bash
+sdlc-plan "Build a REST API for a todo app with add/list/delete"   # define the backlog
+# then use the /api/sprints/* endpoints, or the sprint_tool functions, to run it.
+```
 
-### 2. Model Routing & Intelligence Tiering
-The system optimizes for speed, cost, and reasoning capabilities:
-*   **Manual Mode**: Users can specify a dedicated model for each agent in the project configuration.
-*   **Auto Mode**: An Orchestrator evaluates task complexity to route work:
-    *   *High Complexity (Design/Decomposition)* $\rightarrow$ High-reasoning models (e.g., DeepSeek-V4).
-    *   *Medium Complexity (Implementation)* $\rightarrow$ Specialized coding models (e.g., Qwen-Coder).
-    *   *Low Complexity (Log parsing/Reporting)* $\rightarrow$ Lightweight, fast models.
+For **code implementation** you also need an OpenCode server reachable (default
+`http://127.0.0.1:4096`); the developer path fails loudly with instructions if it isn't running.
+Non-developer agents (BA, architect, QA reasoning) only need the LLM endpoint.
 
-### 3. Security & Secret Management
-Secrets are never stored in plain text within the project repository or the State Store.
-*   **Tool-Gated Access**: Agents interact with secrets via a specialized `get_secret(key)` tool.
-*   **Backend Storage**: Actual credentials reside in a secure, centralized database, retrieved only into volatile memory during task execution.
+## Configuration
 
-### 5. Contract-First Development & Interface Integrity
+Configuration comes from `config.yaml` at the repo root (git-ignored) and/or environment variables.
+Secrets are never read from the repo — they resolve via env or a git-ignored `.secrets/secrets.json`
+through the `get_secret()` tool.
 
-To prevent integration errors and "interface drift," the system adheres to a contract-first methodology using local specification files (e.g., `openapi.yaml`, `schema.graphql`) as the source of truth.
+```yaml
+# config.yaml
+llm:
+  base_url: "http://localhost:1234/v1"   # LM Studio / any OpenAI-compatible endpoint
+  default_model: "your-loaded-model-id"  # must match what your server actually serves
+  # api_key: set via env SDLCAI_SECRET_LLM_API_KEY or .secrets, NOT here
+  timeout: 600
+```
 
-*   **Spec Generation**: During the Requirement Breakdown, the BA/Architect agents generate an initial interface specification.
-*   **Implementation**: Developers are strictly required to build features that satisfy the existing specification.
-*   **Handling Interface Gaps**: If a developer identifies a need for an additional property or endpoint (an "Interface Gap"):
-    1.  The agent **must not** simply change the code to make it work.
-    2.  The agent attempts to update the local specification file.
-    3.  If the change requires a task outside their current scope (e.g., a Frontend dev needing a Backend change), they must mark the task as `Blocked: Interface Gap` and elevate the requirement to the **Orchestrator** to trigger the necessary cross-role work.
+| Variable | Purpose |
+| :--- | :--- |
+| `SDLCAI_CONFIG` | Path to the config file (default: `./config.yaml`) |
+| `SDLCAI_SECRET_LLM_API_KEY` | LLM API key (for hosted endpoints) |
+| `SDLCAI_API_TOKEN` | Dashboard/API auth token — **required** to bind beyond loopback |
+| `SDLCAI_HOST` | Server bind host (default `127.0.0.1`) |
+| `SDLCAI_CORS_ORIGINS` | Comma-separated allowed origins (default: none) |
+| `PULSE_SERVER_URL` | Where spawned agents post telemetry (default `http://127.0.0.1:8080`) |
+| `OPENCODE_BIN` / `OPENCODE_PORT` | OpenCode binary name / port |
+| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | Telegram notifications (optional) |
+| `TELEGRAM_ALLOWED_USER_IDS` | Comma-separated user IDs allowed to answer clarifications |
 
-The system manages work using a digital **Kanban Board**, providing real-time visibility into the project status.
+## Security
 
-### 1. Story-Based Workflow
-Work is organized into "Stories" (User Stories/Requirements). As agents move through the lifecycle:
-*   **Completion Notes**: Upon completing a story, the assigned agent must provide a summary of their work, including technical implementation details and any side effects.
-*   **Status Updates**: The Kanban board tracks the movement of stories through stages: `Backlog` $\rightarrow$ `In Progress` $\rightarrow$ `Testing` $\rightarrow$ `Architect Review` $\rightarrow$ `Done`.
+The dashboard binds to **loopback by default** and refuses to bind to a public interface unless
+`SDLCAI_API_TOKEN` is set; when a token is set, every API call and the WebSocket require it. Agent
+tools are constrained — file access is confined to the project directories, git and shell run without
+`shell=True` injection surface, and network access is limited to http/https. This is safe for
+single-operator local use. **Multi-tenant or internet-facing deployment additionally requires
+sandboxing the shell/code-execution tools** (containers, network policy) — see
+[docs/REVIEW.md](docs/REVIEW.md) P1-1.
 
-### 2. Automated Daily Reporting
-A scheduled cron job aggregates all activity from the previous 24 hours:
-*   It pulls all "Completed" stories.
-*   It synthesizes the agents' completion notes into a coherent narrative.
-*   It presents this as a structured report (e.g., via Telegram) for the user, ensuring transparency without requiring constant monitoring.
+## Running the tests
 
-### 3. User Visibility
-The Kanban board and current project state are exposed through a user-facing interface, allowing the human to monitor progress, review agent notes, and adjust autonomy levels on the fly.
+```bash
+pip install -e ".[dev]"
+pytest            # 488 passing; hermetic (writes only to tmp dirs)
+```
 
-### 1. Proactive Error Reporting
-Deployed applications can be configured to send proactive "Heartbeat/Error" notifications via webhooks directly to the Scrum Team. An unhandled exception in the app triggers an immediate event that the **Business Analyst** uses to generate a new bug report and task.
+CI runs the suite on every push across Python 3.10–3.12.
 
-### 2. Passive Log Analysis
-The **Infrastructure Analyst** performs periodic scans of system logs to identify:
-*   Non-critical warnings or "silent" failures.
-*   Performance regressions (e.g., increased latency).
-*   Anomalous patterns that do not trigger explicit errors but indicate instability.
+## Roles
 
-## Core State Management
+| Agent | Responsibility |
+| :--- | :--- |
+| **Business Analyst** | Requirement refinement, clarification questions, story decomposition, change requests |
+| **Solution Architect** | Architecture, interface specs, the architect quality gate |
+| **Software Developer** | Task implementation via OpenCode, contract-first |
+| **QA / Test Analyst** | Runs the real tests, the QA quality gate |
+| **Orchestrator (Scrum Master)** | Sprint loop, gate enforcement, retries, human escalation |
+| **Release Manager / Infrastructure Analyst** | Deployment & monitoring *(defined; implementation is on the roadmap)* |
 
-To ensure consistency across all agents, the system utilizes a centralized **Project State Store**. This acts as the "Single Source of Truth" for the entire lifecycle.
+## Documentation
 
-### 1. Knowledge Base (The "Brain")
-This section contains the qualitative data that guides decision-making:
-*   **Human Vision:** The original high-level intent and constraints provided by the user.
-*   **Technical Requirements:** Structured specifications generated by the Business Analyst.
-*   **System Architecture:** The blueprint (design patterns, schema, component maps) maintained by the Solution Architect.
+- [docs/REVIEW.md](docs/REVIEW.md) — full code review and prioritized findings
+- [docs/SCRUM_PROCESS.md](docs/SCRUM_PROCESS.md) — the scrum operating model
+- [docs/AGENTS_AND_PROMPTS.md](docs/AGENTS_AND_PROMPTS.md) — agent/prompt design & local-model notes
+- [docs/INTAKE_AND_TRACKING.md](docs/INTAKE_AND_TRACKING.md) — intake & backlog tracking analysis
+- [docs/ROADMAP.md](docs/ROADMAP.md) — phased plan and what remains
 
-### 2. Operational Context (The "Hands")
-This section contains the quantitative data required for execution:
-*   **Project Configuration:** Initial setup details provided by the human, including:
-    *   Local and upstream Git repository paths/URLs.
-    *   Deployment targets (e.g., Docker Compose files, server IPs, credentials).
-    *   Environment variables and system-specific constraints.
-*   **Task & Bug Registry:** A dynamic list of all tasks and issues, tracking:
-    *   `ID`, `Description`, and `Dependencies`.
-    *   `Status` (Pending, In Progress, Testing, Completed, Blocked).
-    *   `Assigned Agent`.
-    *   `Verification Artifacts` (links to test results or logs).
+## State & storage
 
-### 3. Event Log (The "Memory")
-A chronological record of all agent actions, tool outputs, and system changes to allow for auditing, debugging, and "re-planning" if an error occurs.
+State lives in local JSON under `state/` (task/story/sprint registries, project state,
+clarifications), an append-only event log under `logs/event_log.jsonl` (the audit trail and the
+substrate the retrospective mines), and per-project working directories. All of it is git-ignored.

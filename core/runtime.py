@@ -331,13 +331,14 @@ class AgentRuntime:
                 f"{self.pulse_url}/api/telemetry", json=payload, timeout=2
             )
             if resp.status_code != 200:
-                print(f"[Runtime] Warning: Telemetry failed ({resp.status_code})")
+                print(f"[Runtime] Warning: Telemetry failed ({resp.status_code}) to {self.pulse_url}")
         except Exception as e:
-            print("")
-            #print(f"[Runtime] Warning: Could not connect to Pulse Server: {e}")
-
-        #print("System prompt")
-        #print(self.system_prompt)
+            # Non-fatal: telemetry is best-effort. Surface it once (quietly)
+            # instead of swallowing it — a silent failure is what hid the
+            # 8080/8081 port mismatch for so long.
+            if not getattr(self, "_telemetry_warned", False):
+                print(f"[Runtime] Telemetry unavailable at {self.pulse_url}: {e}")
+                self._telemetry_warned = True
 
     def run(self):
         """Execute the ReAct reasoning loop."""
@@ -595,7 +596,11 @@ if __name__ == "__main__":
     parser.add_argument("--persona", default="architect", help="Agent persona/role")
     parser.add_argument("--max_iterations", type=int, default=10, help="Max reasoning turns")
     parser.add_argument("--job_id", required=True, help="Unique job identifier")
-    parser.add_argument("--pulse_url", default="http://localhost:8081", help="Pulse Server URL")
+    parser.add_argument(
+        "--pulse_url",
+        default=os.environ.get("PULSE_SERVER_URL", "http://127.0.0.1:8080"),
+        help="Pulse Server URL",
+    )
     parser.add_argument("--task_id", type=int, default=None, help="Registry task ID")
     parser.add_argument("--project_id", default=None, help="Project ID for .sdlc/ logging")
 

@@ -13,7 +13,6 @@ dependencies = [
     "litellm>=1.0.0",
     "pyyaml>=6.0",
     "requests>=2.31.0",
-    "httpx>=0.24.0",
     "watchdog>=3.0.0",
     "starlette>=0.27.0",
 ]
@@ -22,13 +21,27 @@ dependencies = [
 dev = [
     "pytest>=7.0",
     "pytest-mock>=3.10.0",
+    "httpx>=0.24.0",
 ]
-telegram = [
-    "python-telegram-bot>=20.0",
-]
+
+[project.scripts]
+sdlc-bootstrap = "bootstrap:bootstrap"
+sdlc-pulse = "tools.pulse_server:_cli"
+sdlc-plan = "tools.project_tool:_cli"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
+[tool.setuptools]
+# bootstrap.py is a top-level module (nearly everything does
+# `from bootstrap import ...`); without this a wheel omits it and every
+# import fails.
+py-modules = ["bootstrap"]
+
 [tool.setuptools.packages.find]
 include = ["core*", "tools*", "roles*"]
+
+[tool.setuptools.package-data]
+# Ship the non-Python data the app loads at runtime.
+roles = ["*.yaml"]
+tools = ["radar.html"]

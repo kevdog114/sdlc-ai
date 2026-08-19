@@ -1024,13 +1024,18 @@ def get_project_status(project_id: str) -> Optional[Dict[str, Any]]:
     }
 
 
-if __name__ == "__main__":
+def _cli():
+    """Console-script entry point: define a project's backlog from a description."""
     import sys
 
     if len(sys.argv) < 2:
-        print("Usage: python -m tools.project_tool <project-description>")
+        print("Usage: sdlc-plan <project-description>")
         sys.exit(1)
 
     description = " ".join(sys.argv[1:])
     result = submit_project(description)
     print(json.dumps(result, indent=2, default=str))
+
+
+if __name__ == "__main__":
+    _cli()

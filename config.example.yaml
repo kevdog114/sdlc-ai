@@ -1,0 +1,11 @@
+# SDLC-AI configuration. Copy to config.yaml (git-ignored) and edit.
+# Secrets do NOT belong here — set the LLM API key via the env var
+# SDLCAI_SECRET_LLM_API_KEY or .secrets/secrets.json (see README).
+
+llm:
+  # OpenAI-compatible endpoint. LM Studio's default is shown below.
+  base_url: "http://localhost:1234/v1"
+  # Must match a model your server actually serves.
+  default_model: "your-loaded-model-id"
+  # Seconds; local models can be slow.
+  timeout: 600

@@ -61,18 +61,22 @@ def find_project_root() -> Path:
 
 PROJECT_ROOT = find_project_root()
 
-# Override bootstrap paths to ensure they use the discovered PROJECT_ROOT
-bootstrap.BASE_DIR = PROJECT_ROOT
-bootstrap.STATE_DIR = PROJECT_ROOT / "state"
-bootstrap.TASK_REGISTRY_PATH = PROJECT_ROOT / "state" / "task_registry.json"
-bootstrap.STATE_FILE_PATH = PROJECT_ROOT / "state" / "project_state.json"
-bootstrap.EVENT_LOG_PATH = PROJECT_ROOT / "logs" / "event_log.jsonl"
+# Only override bootstrap's paths when they are still at their import-time
+# default (i.e. nobody has redirected them). A test harness or embedder that
+# has already pointed bootstrap at another location must not be clobbered —
+# the routes read bootstrap.* at call time, so respecting the redirection is
+# both correct and what keeps the suite hermetic.
+_bootstrap_default_base = Path(bootstrap.__file__).resolve().parent
+if Path(bootstrap.BASE_DIR).resolve() == _bootstrap_default_base:
+    bootstrap.BASE_DIR = PROJECT_ROOT
+    bootstrap.STATE_DIR = PROJECT_ROOT / "state"
+    bootstrap.TASK_REGISTRY_PATH = PROJECT_ROOT / "state" / "task_registry.json"
+    bootstrap.STATE_FILE_PATH = PROJECT_ROOT / "state" / "project_state.json"
+    bootstrap.EVENT_LOG_PATH = PROJECT_ROOT / "logs" / "event_log.jsonl"
 
-# Update local Pulse Server paths
-HTML_PATH = PROJECT_ROOT / "tools" / "radar.html"
+# Local Pulse Server path (radar.html lives beside this module).
+HTML_PATH = Path(__file__).resolve().parent / "radar.html"
 
-print(f"DEBUG: Detected Project Root: {PROJECT_ROOT}")
-print(f"DEBUG: Using TASK_REGISTRY_PATH: {bootstrap.TASK_REGISTRY_PATH}")
 
 app = FastAPI(title="Command Center Pulse")
 
@@ -155,16 +159,27 @@ def _safe_load_registry() -> Dict[str, Any]:
         pass
     return {}
 
+_EVENT_TAIL = 500  # cap events held in memory / served to the dashboard
+
+
 def _safe_read_events() -> List[str]:
+    """Return the tail of the JSONL event log as raw lines."""
+    try:
+        if bootstrap.EVENT_LOG_PATH.exists():
+            with open(bootstrap.EVENT_LOG_PATH, "r", encoding="utf-8") as f:
+                lines = [ln.strip() for ln in f if ln.strip()]
+            return lines[-_EVENT_TAIL:]
+    except (OSError, PermissionError):
+        pass
     return []
 
+
 def _load_initial_state():
-    global _cached_registry, registry_position, event_position
-    print("DEBUG: Running _load_initial_state...")
+    global _cached_registry, registry_position, event_position, _cached_event_lines
     _cached_registry = _safe_load_registry()
-    event_position = 0
+    _cached_event_lines = _safe_read_events()
+    event_position = len(_cached_event_lines)
     registry_position = len(_cached_registry.get("tasks", []))
-    print(f"DEBUG: Initial state loaded. Registry tasks: {len(_cached_registry.get('tasks', []))}, Events disabled.")
 
 _load_initial_state()
 
@@ -220,7 +235,27 @@ class _FileChangeHandler(FileSystemEventHandler):
                 registry_position = len(new_tasks)
 
     def _handle_event_change(self):
-        pass
+        global _cached_event_lines, event_position
+        time.sleep(0.1)  # debounce
+        with lock:
+            lines = _safe_read_events()
+            # Broadcast only genuinely new lines. If the log was rotated
+            # (fewer lines than our position), resync without replaying.
+            if len(lines) < event_position:
+                event_position = len(lines)
+                _cached_event_lines = lines
+                return
+            new_lines = lines[event_position:]
+            _cached_event_lines = lines
+            event_position = len(lines)
+        new_events = []
+        for line in new_lines:
+            try:
+                new_events.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+        if new_events:
+            _broadcast({"type": "event_update", "events": new_events})
 
     def _handle_state_change(self):
         time.sleep(0.1)
@@ -275,12 +310,10 @@ class _FileChangeHandler(FileSystemEventHandler):
             except Exception:
                 pass
 
-print("DEBUG: Setting up observer...")
 observer = Observer()
 handler = _FileChangeHandler()
 observer.schedule(handler, str(PROJECT_ROOT), recursive=True)
 observer.start()
-print("DEBUG: Observer started.")
 
 # --- API Routes ---
 
@@ -289,8 +322,15 @@ async def get_registry():
     return _safe_load_registry()
 @app.get("/api/events")
 async def get_events(limit: int = 100):
-    """Returns the last N events from the log."""
-    return {"events": [], "message": "Event logging is currently disabled."}
+    """Returns the last N events from the JSONL event log."""
+    limit = max(1, min(limit, _EVENT_TAIL))
+    events = []
+    for line in _safe_read_events()[-limit:]:
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return {"events": events, "count": len(events)}
 
 _TELEMETRY_MAX_AGENTS = 500
 
@@ -553,12 +593,9 @@ async def options_submit():
 
 @app.post("/api/projects/submit")
 async def submit_project(request: Request):
-    """Submit a high-level project for the full SDLC pipeline."""
-    client_ip = request.client.host if request.client else "unknown"
-    print(f"\n[DEBUG] /api/projects/submit hit by {client_ip}")
+    """Submit a high-level project for the definition pipeline."""
     try:
         body = await request.json()
-        print(f"[DEBUG] Body: {body}")
         description = body.get("description", "")
         name = body.get("name", "Untitled Project")
         if not description:
@@ -571,7 +608,6 @@ async def submit_project(request: Request):
         project["auto_execute"] = bool(body.get("auto_execute", False))
         _save_project(project)
         project_id = project["id"]
-        print(f"[DEBUG] Created project {project_id}")
 
         # 2. Run the heavy pipeline in a daemon thread
         _run_pipeline_in_thread(sp, description, project_id=project_id)
@@ -588,7 +624,6 @@ async def submit_project(request: Request):
         _broadcast({"type": "project_update", "data": result})
         return result
     except Exception as e:
-        print(f"[DEBUG] Error in submit_project: {str(e)}")
         return {"success": False, "error": str(e)}
 
 
@@ -872,7 +907,6 @@ async def websocket_endpoint(websocket: WebSocket):
         if websocket in connected_clients:
             connected_clients.remove(websocket)
 
-print("DEBUG: App mounted.")
 
 def start_pulse_server(host: str = "127.0.0.1", port: int = 8080) -> str:
     import uvicorn
@@ -917,16 +951,21 @@ def stop_pulse_server():
             obj.should_exit = True
             break
 
-print("DEBUG: pulse_server module loading complete.")
 
-if __name__ == "__main__":
+def _cli():
+    """Console-script entry point: run the pulse server (blocking).
+
+    Loopback by default; exposing beyond localhost requires an explicit host
+    (SDLCAI_HOST) AND a configured API token (fail closed).
+    """
     import uvicorn
     import sys
-    # Loopback by default; exposing beyond localhost requires an explicit
-    # host AND a configured API token (fail closed).
     host = os.environ.get("SDLCAI_HOST", "127.0.0.1")
-    port = 8080
-    if len(sys.argv) > 1:
-        port = int(sys.argv[1])
+    port = int(sys.argv[1]) if len(sys.argv) > 1 else int(os.environ.get("SDLCAI_PORT", "8080"))
     _require_token_for_nonlocal(host)
+    print(f"SDLC-AI pulse server on http://{host}:{port}")
     uvicorn.run(app, host=host, port=port, log_level="info")
+
+
+if __name__ == "__main__":
+    _cli()

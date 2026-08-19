@@ -57,14 +57,10 @@ def spawn_agent(goal: str, persona: str = "architect", api_url: Optional[str] = 
     if project_id:
         command.extend(["--project_id", project_id])
 
-    # Use environment variable or argument for API URL (Pulse Server)
-    if api_url:
-        command.extend(["--pulse_url", api_url])
-    elif os.environ.get("PULSE_SERVER_URL"):
-        command.extend(["--pulse_url", os.environ.get("PULSE_SERVER_URL")])
-    else:
-        # Default for local dev
-        command.extend(["--pulse_url", "http://localhost:8081"])
+    # Pulse Server URL: explicit arg > env > the port the server actually
+    # listens on (8080). The old default was 8081, so every heartbeat missed.
+    pulse_url = api_url or os.environ.get("PULSE_SERVER_URL") or "http://127.0.0.1:8080"
+    command.extend(["--pulse_url", pulse_url])
 
     try:
         # Open log file outside of a 'with' block to ensure it stays open for the process
